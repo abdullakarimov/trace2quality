@@ -142,3 +142,4 @@ local_config.py
 # Artifacts and outputs
 output/
 artifacts/
+legacy/

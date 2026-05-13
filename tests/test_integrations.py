@@ -172,7 +172,7 @@ class TestAzureDevOpsClient:
     async def test_test_connection_success(self):
         """Test successful Azure DevOps connection"""
         config = {
-            "org_url": "http://dev.azure.com/org",
+            "org_url": "https://ado.example.test/org",
             "project": "MyProject",
             "pat": "test_pat"
         }
@@ -192,7 +192,7 @@ class TestAzureDevOpsClient:
     async def test_fetch_test_plans(self):
         """Test fetching test plans"""
         config = {
-            "org_url": "http://dev.azure.com/org",
+            "org_url": "https://ado.example.test/org",
             "project": "MyProject",
             "pat": "test_pat"
         }
@@ -212,6 +212,103 @@ class TestAzureDevOpsClient:
 
             assert len(result) == 1
             assert result[0]["id"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_list_orphan_test_cases_filters_linked_cases(self):
+        """Test orphan Test Case detection by excluding cases already in suites."""
+        config = {
+            "org_url": "https://ado.example.test/org",
+            "project": "MyProject",
+            "pat": "test_pat"
+        }
+
+        client = AzureDevOpsClient(config)
+
+        with patch.object(
+            client,
+            "_fetch_all_test_case_work_items",
+            AsyncMock(
+                return_value=[
+                    {"id": "101", "title": "Case 101", "state": "Active"},
+                    {"id": "102", "title": "Case 102", "state": "Design"},
+                ]
+            ),
+        ), patch.object(
+            client,
+            "_fetch_test_case_ids_in_suites",
+            AsyncMock(return_value={"101"}),
+        ):
+            result = await client.list_orphan_test_cases()
+
+        assert result["success"] is True
+        assert result["total_test_cases"] == 2
+        assert result["linked_test_cases"] == 1
+        assert len(result["orphan_test_cases"]) == 1
+        assert result["orphan_test_cases"][0]["id"] == "102"
+
+    @pytest.mark.asyncio
+    async def test_delete_test_cases_partial_failure(self):
+        """Test deleting Test Cases returns both deleted and failed IDs."""
+        config = {
+            "org_url": "https://ado.example.test/org",
+            "project": "MyProject",
+            "pat": "test_pat"
+        }
+
+        with patch("httpx.AsyncClient.delete") as mock_delete:
+            success_response = MagicMock()
+            success_response.status_code = 204
+            success_response.text = ""
+
+            failed_response = MagicMock()
+            failed_response.status_code = 400
+            failed_response.text = "Bad request"
+
+            mock_delete.side_effect = [success_response, failed_response]
+
+            client = AzureDevOpsClient(config)
+            result = await client.delete_test_cases(["1001", "1002"])
+
+            assert result["success"] is False
+            assert result["deleted"] == ["1001"]
+            assert result["deleted_count"] == 1
+            assert result["failed_count"] == 1
+            assert result["failed"][0]["id"] == "1002"
+            delete_url = mock_delete.call_args_list[0].args[0]
+            assert delete_url == (
+                "https://ado.example.test/org/MyProject/_apis/test/testcases/1001?api-version=7.1-preview.1"
+            )
+
+    @pytest.mark.asyncio
+    async def test_orphan_detection_excludes_suite_linked_cases(self):
+        """Test that linked test cases are removed from the orphan list."""
+        config = {
+            "org_url": "https://ado.example.test/org",
+            "project": "MyProject",
+            "pat": "test_pat"
+        }
+
+        client = AzureDevOpsClient(config)
+
+        with patch.object(
+            client,
+            "_fetch_all_test_case_work_items",
+            AsyncMock(
+                return_value=[
+                    {"id": "101", "title": "Linked case", "state": "Active"},
+                    {"id": "102", "title": "Orphan case", "state": "Active"},
+                ]
+            ),
+        ), patch.object(
+            client,
+            "_fetch_test_case_ids_in_suites",
+            AsyncMock(return_value={"101"}),
+        ):
+            result = await client.list_orphan_test_cases()
+
+        assert result["success"] is True
+        assert len(result["orphan_test_cases"]) == 1
+        assert {case["id"] for case in result["orphan_test_cases"]} == {"102"}
 
 
 class TestGeminiClient:

@@ -98,6 +98,129 @@ class ConfluenceClient(IntegrationClient):
             logger.error(f"Error fetching page content {page_id}: {str(e)}")
             return ""
 
+    async def get_page(self, page_id: str) -> Optional[dict[str, Any]]:
+        """Fetch full page payload including storage body and metadata."""
+        try:
+            async with httpx.AsyncClient() as client:
+                auth = (self.email, self.api_token)
+                response = await client.get(
+                    f"{self.base_url}/rest/api/content/{page_id}",
+                    auth=auth,
+                    params={"expand": "body.storage,version,space,ancestors"},
+                    timeout=30,
+                )
+                if response.status_code == 200:
+                    return response.json()
+                return None
+        except Exception as e:
+            logger.error(f"Error getting page {page_id}: {str(e)}")
+            return None
+
+    async def search_pages(self, cql: str, limit: int = 100) -> list[dict[str, Any]]:
+        """Search Confluence pages with CQL and pagination."""
+        collected: list[dict[str, Any]] = []
+        start = 0
+        page_size = min(max(limit, 1), 100)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                auth = (self.email, self.api_token)
+                while len(collected) < limit:
+                    response = await client.get(
+                        f"{self.base_url}/rest/api/content/search",
+                        auth=auth,
+                        params={
+                            "cql": cql,
+                            "limit": page_size,
+                            "start": start,
+                            "expand": "space",
+                        },
+                        timeout=30,
+                    )
+                    if response.status_code != 200:
+                        break
+                    data = response.json()
+                    batch = data.get("results", [])
+                    if not batch:
+                        break
+                    for item in batch:
+                        collected.append(
+                            {
+                                "id": str(item.get("id", "")),
+                                "title": item.get("title", ""),
+                                "space": item.get("space", {}).get("key", ""),
+                                "url": item.get("_links", {}).get("self", ""),
+                            }
+                        )
+                        if len(collected) >= limit:
+                            break
+                    if len(batch) < page_size:
+                        break
+                    start += page_size
+        except Exception as e:
+            logger.error(f"Error searching pages via CQL: {str(e)}")
+
+        return collected
+
+    async def search_pages_by_space(self, limit: int = 250, timeout: int = 15) -> list[dict[str, Any]]:
+        """Fetch pages from space using direct /content endpoint (bypasses CQL search limitations).
+        
+        This method is more reliable than CQL search for discovering all pages in a space,
+        as it doesn't have the same pagination/filtering limitations.
+        Includes timeout to prevent hanging on slow Confluence instances.
+        """
+        collected: list[dict[str, Any]] = []
+        start = 0
+        page_size = min(max(limit, 1), 100)  # Reduced page size for faster responses
+        max_batches = min(5, max(1, (limit + page_size - 1) // page_size))  # Limit batches to prevent long waits
+        batch_count = 0
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                auth = (self.email, self.api_token)
+                while len(collected) < limit and batch_count < max_batches:
+                    batch_count += 1
+                    try:
+                        response = await client.get(
+                            f"{self.base_url}/rest/api/content",
+                            auth=auth,
+                            params={
+                                "spaceKey": self.space,
+                                "type": "page",
+                                "limit": page_size,
+                                "start": start,
+                                "expand": "space",
+                            },
+                        )
+                        if response.status_code != 200:
+                            logger.warning(f"Confluence API returned {response.status_code}, stopping pagination")
+                            break
+                        data = response.json()
+                        batch = data.get("results", [])
+                        if not batch:
+                            break
+                        for item in batch:
+                            collected.append(
+                                {
+                                    "id": str(item.get("id", "")),
+                                    "title": item.get("title", ""),
+                                    "space": item.get("space", {}).get("key", ""),
+                                    "url": item.get("_links", {}).get("self", ""),
+                                }
+                            )
+                            if len(collected) >= limit:
+                                break
+                        if len(batch) < page_size:
+                            break  # Reached end of results
+                        start += page_size
+                    except httpx.TimeoutException:
+                        logger.warning(f"Confluence API timeout during batch {batch_count}, stopping pagination")
+                        break
+        except Exception as e:
+            logger.error(f"Error fetching pages by space: {str(e)}")
+
+        return collected
+
     async def update_page_content(self, page_id: str, content: str) -> dict[str, Any]:
         """Update page content in Confluence"""
         try:
@@ -161,6 +284,33 @@ class ConfluenceClient(IntegrationClient):
         except Exception as e:
             logger.error(f"Error creating page {title}: {str(e)}")
             return {"success": False, "error": str(e)}
+
+    async def find_page_by_title(self, title: str) -> Optional[dict[str, Any]]:
+        """Find a page by exact title in the configured space."""
+        try:
+            async with httpx.AsyncClient() as client:
+                auth = (self.email, self.api_token)
+                cql = f'space="{self.space}" and title="{title.replace("\"", "\\\"")}"'
+                response = await client.get(
+                    f"{self.base_url}/rest/api/content/search",
+                    auth=auth,
+                    params={"cql": cql, "limit": 1},
+                    timeout=30,
+                )
+                if response.status_code != 200:
+                    return None
+                results = response.json().get("results", [])
+                if not results:
+                    return None
+                found = results[0]
+                return {
+                    "id": str(found.get("id")),
+                    "title": found.get("title", ""),
+                    "url": found.get("_links", {}).get("self", ""),
+                }
+        except Exception as e:
+            logger.error(f"Error finding page by title {title}: {str(e)}")
+            return None
 
 
 __all__ = ["ConfluenceClient"]

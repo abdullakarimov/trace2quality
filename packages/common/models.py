@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+import re
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class IntegrationType(str, Enum):
@@ -72,10 +73,45 @@ class WorkflowParameter(BaseModel):
 
 class WorkflowRunCreate(BaseModel):
     """Request to create a workflow run"""
-    workflow_key: WorkflowType
+    workflow_key: Optional[WorkflowType] = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
     force: bool = False
+
+
+class UpdateCoverageRunRequest(BaseModel):
+    """Request payload for update_coverage_pages workflow."""
+
+    mode: Literal["single", "all_mapped", "all_missing"]
+    us_code: Optional[str] = None
+    apply: bool = False
+    force: bool = False
+    batch_delay_seconds: int = Field(default=3, ge=0, le=30)
+    max_items: Optional[int] = None
+    fail_fast: bool = False
+    include_debug_artifacts: bool = True
+    use_cached_azure_snapshot: bool = False
+
+    @model_validator(mode="after")
+    def validate_mode_us_code(self):
+        """Validate mode/us_code constraints and max_items semantics."""
+        us_pattern = r"^US-[0-9]+(\.[0-9]+)*$"
+
+        if self.mode == "single":
+            if not self.us_code:
+                raise ValueError("us_code is required when mode=single")
+            if not re.match(us_pattern, self.us_code):
+                raise ValueError(
+                    "us_code must match pattern ^US-[0-9]+(\\.[0-9]+)*$"
+                )
+        else:
+            if self.us_code:
+                raise ValueError("us_code is only allowed when mode=single")
+
+        if self.max_items is not None and self.max_items <= 0:
+            raise ValueError("max_items must be > 0 when provided")
+
+        return self
 
 
 class WorkflowRunResponse(BaseModel):

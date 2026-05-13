@@ -1,12 +1,22 @@
 """Configuration for Trace2Quality"""
 
 from functools import lru_cache
+from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE = PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
     """Application settings from environment variables"""
+
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_FILE),
+        case_sensitive=False,
+    )
 
     # === Application ===
     app_env: str = "development"
@@ -26,7 +36,7 @@ class Settings(BaseSettings):
 
 
     # === Azure DevOps ===
-    azure_devops_org_url: str = "https://dev.azure.com/yourorg"
+    azure_devops_org_url: str = ""
     azure_devops_project: str = "YourProject"
     azure_devops_pat: str = ""
 
@@ -53,13 +63,25 @@ class Settings(BaseSettings):
     artifact_storage_path: str = "./data/artifacts"
     cache_storage_path: str = "./data/cache"
 
+    # === Celery ===
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/0"
+
     # === Features ===
     feature_data_migration: bool = True
     feature_webhook_sync: bool = False
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        # Prefer values from the repo-root .env over inherited shell env vars.
+        return init_settings, dotenv_settings, env_settings, file_secret_settings
 
     @property
     def is_production(self) -> bool:

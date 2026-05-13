@@ -62,8 +62,9 @@ class JiraClient(IntegrationClient):
         try:
             async with httpx.AsyncClient() as client:
                 auth = (self.email, self.api_token)
+                # Jira Cloud moved JQL search to /search/jql. Try the new endpoint first.
                 response = await client.get(
-                    f"{self.base_url}/rest/api/3/search",
+                    f"{self.base_url}/rest/api/3/search/jql",
                     auth=auth,
                     params={"jql": jql, "maxResults": 100},
                     timeout=30,
@@ -71,9 +72,20 @@ class JiraClient(IntegrationClient):
                 if response.status_code == 200:
                     data = response.json()
                     return data.get("issues", [])
-                else:
-                    logger.error(f"Failed to fetch issues: {response.text}")
-                    return []
+
+                # Fallback for instances that still support the legacy endpoint.
+                legacy_response = await client.get(
+                    f"{self.base_url}/rest/api/3/search",
+                    auth=auth,
+                    params={"jql": jql, "maxResults": 100},
+                    timeout=30,
+                )
+                if legacy_response.status_code == 200:
+                    data = legacy_response.json()
+                    return data.get("issues", [])
+
+                logger.error(f"Failed to fetch issues: {response.text}")
+                return []
         except Exception as e:
             logger.error(f"Error fetching issues: {str(e)}")
             return []

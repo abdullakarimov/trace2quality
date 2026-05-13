@@ -10,6 +10,7 @@ from packages.common.models import (
     RunStatus,
     WorkflowParameter,
     WorkflowRunCreate,
+    UpdateCoverageRunRequest,
     WorkflowRunResponse,
     WorkflowType,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "IntegrationConfig",
     "WorkflowParameter",
     "WorkflowRunCreate",
+    "UpdateCoverageRunRequest",
     "WorkflowRunResponse",
     "ArtifactResponse",
     "HealthCheckResponse",
