@@ -1,6 +1,8 @@
 """Google Gemini integration client using the google-genai SDK"""
 
+import asyncio
 import json
+import time
 from typing import Any, Optional
 
 from google import genai
@@ -9,6 +11,11 @@ from packages.common import IntegrationConnectionStatus, IntegrationType, get_lo
 from packages.integrations import IntegrationClient
 
 logger = get_logger(__name__)
+
+# Rate limiting: 10 second delay between all Gemini API requests
+_RATE_LIMIT_SECONDS = 10
+_last_request_time: float = 0.0
+_rate_limit_lock = asyncio.Lock()
 
 
 class GeminiClient(IntegrationClient):
@@ -25,9 +32,21 @@ class GeminiClient(IntegrationClient):
         )
 
     async def _generate(self, prompt: str) -> Optional[str]:
-        """Generate content using the google-genai SDK asynchronously."""
+        """Generate content using the google-genai SDK asynchronously with rate limiting."""
+        global _last_request_time
+        
         if not self._client:
             return None
+        
+        # Enforce 10-second rate limit between all requests
+        async with _rate_limit_lock:
+            elapsed = time.time() - _last_request_time
+            if elapsed < _RATE_LIMIT_SECONDS:
+                sleep_time = _RATE_LIMIT_SECONDS - elapsed
+                logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s before next Gemini request")
+                await asyncio.sleep(sleep_time)
+            _last_request_time = time.time()
+        
         response = await self._client.aio.models.generate_content(
             model=self.model,
             contents=prompt,
