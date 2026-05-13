@@ -136,7 +136,7 @@ def _render_update_coverage_page(
                     const logs = logsData.logs || [];
                     const lines = logs.map((l) => `${{l.timestamp}} [${{l.level}}] ${{l.message}}`);
                     const logsEl = document.getElementById("liveLogs");
-                    logsEl.textContent = lines.join("\n") || "No logs yet";
+                    logsEl.textContent = lines.join("\\n") || "No logs yet";
 
                     if (logs.length > 0) {{
                         lastLogTimestamp = logs[logs.length - 1].timestamp;
