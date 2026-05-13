@@ -1,16 +1,14 @@
-"""Google Gemini integration client (REST API via httpx — no SDK dependency)"""
+"""Google Gemini integration client using the google-genai SDK"""
 
 import json
 from typing import Any, Optional
 
-import httpx
+from google import genai
 
 from packages.common import IntegrationConnectionStatus, IntegrationType, get_logger
 from packages.integrations import IntegrationClient
 
 logger = get_logger(__name__)
-
-_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 class GeminiClient(IntegrationClient):
@@ -22,22 +20,19 @@ class GeminiClient(IntegrationClient):
         super().__init__(config)
         self.api_key = config.get("api_key", "")
         self.model = config.get("model", "gemini-2.0-flash")
+        self._client: Optional[genai.Client] = (
+            genai.Client(api_key=self.api_key) if self.api_key else None
+        )
 
     async def _generate(self, prompt: str) -> Optional[str]:
-        """Call the Gemini generateContent REST endpoint asynchronously."""
-        if not self.api_key:
+        """Generate content using the google-genai SDK asynchronously."""
+        if not self._client:
             return None
-        url = f"{_BASE_URL}/{self.model}:generateContent"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(url, json=payload, params={"key": self.api_key})
-            resp.raise_for_status()
-        data = resp.json()
-        try:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, IndexError):
-            logger.error(f"Unexpected Gemini response shape: {data}")
-            return None
+        response = await self._client.aio.models.generate_content(
+            model=self.model,
+            contents=prompt,
+        )
+        return response.text
 
     async def test_connection(self) -> tuple[bool, Optional[str]]:
         """Test connection to Gemini."""
@@ -48,8 +43,6 @@ class GeminiClient(IntegrationClient):
             if text:
                 return True, None
             return False, "Empty response from Gemini"
-        except httpx.HTTPStatusError as e:
-            return False, f"HTTP {e.response.status_code}: {e.response.text}"
         except Exception as e:
             return False, str(e)
 
