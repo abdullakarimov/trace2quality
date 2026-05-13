@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Trace2Quality (t2q) - Enterprise QA automation and traceability platform"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
 authors = [{name = "Trace2Quality Team"}]
 
 dependencies = [
@@ -67,7 +67,10 @@ disallow_incomplete_defs = true
 strict = true
 ignore_missing_imports = false
 
+[tool.setuptools.packages.find]
+include = ["apps*", "packages*"]
+
 [tool.pytest.ini_options]
-testpaths = ["apps", "packages"]
+testpaths = ["apps", "packages", "tests"]
 python_files = "test_*.py"
 asyncio_mode = "auto"
