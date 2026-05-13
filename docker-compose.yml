@@ -1,7 +1,6 @@
-version: '3.9'
-
 services:
   app:
+    platform: linux/arm64
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.app
@@ -35,6 +34,7 @@ services:
       - t2q-network
 
   worker:
+    platform: linux/arm64
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.worker

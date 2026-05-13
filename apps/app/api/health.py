@@ -37,7 +37,8 @@ async def health_check(db: Session = Depends(get_db)) -> dict:
 
     # Check database
     try:
-        db.execute("SELECT 1")
+        from sqlalchemy import text
+        db.execute(text("SELECT 1"))
         health_status["database"] = "ok"
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}")

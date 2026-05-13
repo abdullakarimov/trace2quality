@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from apps.app.config import get_settings
 from apps.app.database import create_all_tables, get_session_factory
 from packages.common import generate_correlation_id, get_logger
+from packages.common import IntegrationType
 from packages.integrations import integration_registry
 from packages.integrations.azure_devops import AzureDevOpsClient
 from packages.integrations.confluence import ConfluenceClient
@@ -21,10 +22,10 @@ from packages.integrations.jira import JiraClient
 logger = get_logger(__name__)
 
 # Register integration clients
-integration_registry.register("azure_devops", AzureDevOpsClient)
-integration_registry.register("confluence", ConfluenceClient)
-integration_registry.register("jira", JiraClient)
-integration_registry.register("gemini", GeminiClient)
+integration_registry.register(IntegrationType.AZURE_DEVOPS, AzureDevOpsClient)
+integration_registry.register(IntegrationType.CONFLUENCE, ConfluenceClient)
+integration_registry.register(IntegrationType.JIRA, JiraClient)
+integration_registry.register(IntegrationType.GEMINI, GeminiClient)
 
 
 @asynccontextmanager

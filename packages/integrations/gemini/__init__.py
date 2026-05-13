@@ -1,13 +1,16 @@
-"""Google Gemini integration client"""
+"""Google Gemini integration client (REST API via httpx — no SDK dependency)"""
 
+import json
 from typing import Any, Optional
 
-import google.generativeai as genai
+import httpx
 
 from packages.common import IntegrationConnectionStatus, IntegrationType, get_logger
 from packages.integrations import IntegrationClient
 
 logger = get_logger(__name__)
+
+_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
 class GeminiClient(IntegrationClient):
@@ -18,36 +21,56 @@ class GeminiClient(IntegrationClient):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
         self.api_key = config.get("api_key", "")
-        self.model = config.get("model", "gemini-pro")
-        if self.api_key:
-            genai.configure(api_key=self.api_key)
+        self.model = config.get("model", "gemini-2.0-flash")
+
+    async def _generate(self, prompt: str) -> Optional[str]:
+        """Call the Gemini generateContent REST endpoint asynchronously."""
+        if not self.api_key:
+            return None
+        url = f"{_BASE_URL}/{self.model}:generateContent"
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, json=payload, params={"key": self.api_key})
+            resp.raise_for_status()
+        data = resp.json()
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError):
+            logger.error(f"Unexpected Gemini response shape: {data}")
+            return None
 
     async def test_connection(self) -> tuple[bool, Optional[str]]:
-        """Test connection to Gemini"""
+        """Test connection to Gemini."""
         if not self.api_key:
             return False, "API key not configured"
-
         try:
-            model = genai.GenerativeModel(self.model)
-            response = model.generate_content("Say 'OK' if you can read this.")
-            if response.text:
+            text = await self._generate("Say 'OK' if you can read this.")
+            if text:
                 return True, None
-            else:
-                return False, "Empty response from Gemini"
+            return False, "Empty response from Gemini"
+        except httpx.HTTPStatusError as e:
+            return False, f"HTTP {e.response.status_code}: {e.response.text}"
         except Exception as e:
             return False, str(e)
 
     async def get_health_status(self) -> IntegrationConnectionStatus:
-        """Get current health status"""
+        """Get current health status."""
         if not self.api_key:
             return IntegrationConnectionStatus.UNCONFIGURED
-
         success, _ = await self.test_connection()
         return (
             IntegrationConnectionStatus.HEALTHY
             if success
             else IntegrationConnectionStatus.UNHEALTHY
         )
+
+    def _parse_json(self, text: str) -> Any:
+        """Extract and parse JSON that may be wrapped in markdown code fences."""
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0]
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0]
+        return json.loads(text.strip())
 
     async def generate_test_cases(
         self, spec: str, test_type: str = "api"
@@ -57,10 +80,7 @@ class GeminiClient(IntegrationClient):
             logger.error("Gemini API key not configured")
             return []
 
-        try:
-            model = genai.GenerativeModel(self.model)
-            
-            prompt = f"""Generate {test_type.upper()} test cases for the following specification:
+        prompt = f"""Generate {test_type.upper()} test cases for the following specification:
 
 {spec}
 
@@ -76,23 +96,14 @@ Return a JSON array of test case objects with these fields:
 
 Return ONLY valid JSON array, no markdown or code blocks."""
 
-            response = model.generate_content(prompt)
-            
-            if response.text:
-                import json
+        try:
+            text = await self._generate(prompt)
+            if text:
                 try:
-                    # Try to extract JSON from response
-                    text = response.text
-                    if "```json" in text:
-                        text = text.split("```json")[1].split("```")[0]
-                    elif "```" in text:
-                        text = text.split("```")[1].split("```")[0]
-                    
-                    test_cases = json.loads(text.strip())
-                    return test_cases if isinstance(test_cases, list) else [test_cases]
+                    result = self._parse_json(text)
+                    return result if isinstance(result, list) else [result]
                 except json.JSONDecodeError:
-                    logger.error(f"Failed to parse Gemini response as JSON: {response.text}")
-                    return []
+                    logger.error(f"Failed to parse Gemini response as JSON: {text}")
             return []
         except Exception as e:
             logger.error(f"Error generating test cases: {str(e)}")
@@ -101,15 +112,12 @@ Return ONLY valid JSON array, no markdown or code blocks."""
     async def generate_test_case(
         self, user_story: str, test_type: str = "ui"
     ) -> dict[str, Any]:
-        """Generate a single test case from user story"""
+        """Generate a single test case from a user story"""
         if not self.api_key:
             logger.error("Gemini API key not configured")
             return {}
 
-        try:
-            model = genai.GenerativeModel(self.model)
-            
-            prompt = f"""Create a single {test_type.upper()} test case for this user story:
+        prompt = f"""Create a single {test_type.upper()} test case for this user story:
 
 {user_story}
 
@@ -125,36 +133,27 @@ Return a JSON object with:
 
 Return ONLY valid JSON, no markdown."""
 
-            response = model.generate_content(prompt)
-            
-            if response.text:
-                import json
+        try:
+            text = await self._generate(prompt)
+            if text:
                 try:
-                    text = response.text
-                    if "```json" in text:
-                        text = text.split("```json")[1].split("```")[0]
-                    elif "```" in text:
-                        text = text.split("```")[1].split("```")[0]
-                    
-                    return json.loads(text.strip())
+                    return self._parse_json(text)
                 except json.JSONDecodeError:
-                    logger.error(f"Failed to parse Gemini response: {response.text}")
-                    return {}
+                    logger.error(f"Failed to parse Gemini response: {text}")
             return {}
         except Exception as e:
             logger.error(f"Error generating test case: {str(e)}")
             return {}
 
-    async def analyze_coverage(self, requirements: list[str], tests: list[str]) -> dict[str, Any]:
+    async def analyze_coverage(
+        self, requirements: list[str], tests: list[str]
+    ) -> dict[str, Any]:
         """Analyze test coverage vs requirements"""
         if not self.api_key:
             logger.error("Gemini API key not configured")
             return {}
 
-        try:
-            model = genai.GenerativeModel(self.model)
-            
-            prompt = f"""Analyze test coverage for these requirements:
+        prompt = f"""Analyze test coverage for these requirements:
 
 REQUIREMENTS:
 {chr(10).join(f"- {r}" for r in requirements)}
@@ -171,21 +170,13 @@ Provide a JSON analysis with:
 
 Return ONLY valid JSON."""
 
-            response = model.generate_content(prompt)
-            
-            if response.text:
-                import json
+        try:
+            text = await self._generate(prompt)
+            if text:
                 try:
-                    text = response.text
-                    if "```json" in text:
-                        text = text.split("```json")[1].split("```")[0]
-                    elif "```" in text:
-                        text = text.split("```")[1].split("```")[0]
-                    
-                    return json.loads(text.strip())
+                    return self._parse_json(text)
                 except json.JSONDecodeError:
-                    logger.error(f"Failed to parse coverage analysis: {response.text}")
-                    return {}
+                    logger.error(f"Failed to parse coverage analysis: {text}")
             return {}
         except Exception as e:
             logger.error(f"Error analyzing coverage: {str(e)}")

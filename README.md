@@ -38,42 +38,41 @@ trace2quality/
 | Backend | FastAPI + SQLAlchemy + Pydantic |
 | Task Queue | Celery + Redis |
 | Database | SQLite (dev), PostgreSQL (production) |
-| Frontend | Server-rendered Jinja2 |
-| Containers | Docker Compose |
+| Frontend | Server-rendered Jinja2 + HTMX |
+| Gemini | Direct REST API (httpx) — no heavy SDK |
 | Testing | pytest + pytest-asyncio |
 | External APIs | Azure DevOps REST, Confluence Cloud, Jira Cloud, Google Gemini |
 
+> **Docker is optional.** The app runs fine with a Python venv, a local Redis, and SQLite.
+> Docker Compose is provided as a convenience for CI or fresh-machine setup only.
+
 ---
 
-## Quick Start
+## Quick Start (native — recommended)
 
 ### Prerequisites
 
-- Docker & Docker Compose
 - Python 3.11+
+- Redis — `brew install redis && brew services start redis` on macOS
 
-### 1. Clone and configure
+### 1. Clone and set up
 
 ```bash
 git clone https://github.com/abdullakarimov/trace2quality.git
 cd trace2quality
-cp .env.example .env
-# Fill in your tokens — see "Getting API Tokens" below
+make setup          # creates venv, installs deps, copies .env.example → .env
 ```
 
-### 2. Start services
+Edit `.env` and fill in your tokens (see **Getting API Tokens** below).
+
+### 2. Run migrations and start
 
 ```bash
-docker-compose up -d
+make migrate        # creates/upgrades SQLite database
+make dev            # starts FastAPI app + Celery worker
 ```
 
-### 3. Run migrations
-
-```bash
-docker-compose exec app alembic upgrade head
-```
-
-### 4. Open the app
+That's it. Open http://localhost:8000.
 
 | URL | Purpose |
 |-----|---------|
@@ -81,22 +80,29 @@ docker-compose exec app alembic upgrade head
 | http://localhost:8000/docs | Swagger API docs |
 | http://localhost:8000/redoc | ReDoc API docs |
 
-### Manual Setup (without Docker)
+### Stopping
+
+Press `Ctrl-C` in the `make dev` terminal, or run:
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -e ".[dev]"
-export PYTHONPATH=$(pwd)
+scripts/dev/stop.sh
+```
 
-# Terminal 1: Redis
-redis-server
+---
 
-# Terminal 2: FastAPI app
-uvicorn apps.app.main:app --reload --port 8000
+## Optional: Docker Compose
 
-# Terminal 3: Celery worker
-celery -A apps.worker.celery_app worker --loglevel=info
+Docker is **not required** for local development. If you prefer containers:
+
+```bash
+# Build and start
+docker-compose up -d
+
+# Run migrations inside container
+docker-compose exec app alembic upgrade head
+
+# Stop
+docker-compose down
 ```
 
 ---
@@ -221,7 +227,7 @@ APP_SECRET_KEY=<another strong random string>
 | `JIRA_EMAIL` | For Jira | Your Atlassian account email |
 | `JIRA_API_TOKEN` | For Jira | Atlassian API token (same as Confluence) |
 | `GEMINI_API_KEY` | For AI features | Google AI Studio API key |
-| `GEMINI_MODEL` | No | Model name (default: `gemini-pro`) |
+| `GEMINI_MODEL` | No | Model name (default: `gemini-2.0-flash`) |
 
 ---
 
@@ -256,23 +262,21 @@ curl http://localhost:8000/api/runs
 ## Development
 
 ```bash
-# Format
-black apps packages
+make setup          # first-time setup
+make dev            # start app + worker
+make test           # run test suite
+make test-coverage  # tests with HTML coverage report
+make lint           # ruff + mypy
+make format         # black + isort
+make migrate        # apply Alembic migrations
+make clean          # clear caches
+```
 
-# Lint
-ruff check apps packages --fix
+Create a new migration after model changes:
 
-# Type checking
-mypy apps packages
-
-# Run tests
-pytest tests/ -v --cov
-
-# Create a new DB migration
-alembic revision --autogenerate -m "description"
-
-# Apply migrations
-alembic upgrade head
+```bash
+PYTHONPATH=$(pwd) venv/bin/alembic -c infra/migrations/alembic.ini \
+  revision --autogenerate -m "describe change"
 ```
 
 ---

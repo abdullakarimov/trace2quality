@@ -76,7 +76,7 @@ class DatasetSnapshotModel(Base):
     storage_path = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    metadata = Column(JSON, default={})
+    extra_metadata = Column(JSON, default={})
 
 
 class UserPreferenceModel(Base):
