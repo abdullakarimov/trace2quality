@@ -2,7 +2,6 @@
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
-from redis import Redis
 
 from apps.app.config import get_settings
 from apps.app.database import get_session_factory
@@ -27,11 +26,9 @@ def get_db(request: Request) -> Session:
 @router.get("/health")
 async def health_check(db: Session = Depends(get_db)) -> dict:
     """System health status"""
-    settings = get_settings()
     health_status = {
         "status": "ok",
         "database": "error",
-        "redis": "error",
         "integrations": {},
     }
 
@@ -42,15 +39,6 @@ async def health_check(db: Session = Depends(get_db)) -> dict:
         health_status["database"] = "ok"
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}")
-        health_status["status"] = "degraded"
-
-    # Check Redis
-    try:
-        redis_client = Redis.from_url(settings.redis_url)
-        redis_client.ping()
-        health_status["redis"] = "ok"
-    except Exception as e:
-        logger.error(f"Redis health check failed: {str(e)}")
         health_status["status"] = "degraded"
 
     # Check integrations (basic status from DB)
