@@ -1,0 +1,98 @@
+version: '3.9'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.app
+    container_name: t2q-app
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///./data/trace2quality.db}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      APP_SECRET_KEY: ${APP_SECRET_KEY}
+      AZURE_DEVOPS_ORG_URL: ${AZURE_DEVOPS_ORG_URL}
+      AZURE_DEVOPS_PROJECT: ${AZURE_DEVOPS_PROJECT}
+      CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL}
+      CONFLUENCE_SPACE: ${CONFLUENCE_SPACE}
+      CONFLUENCE_EMAIL: ${CONFLUENCE_EMAIL}
+      JIRA_BASE_URL: ${JIRA_BASE_URL}
+      JIRA_EMAIL: ${JIRA_EMAIL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    volumes:
+      - ./data:/workspace/data
+      - ./apps/app:/workspace/apps/app
+      - ./packages:/workspace/packages
+    depends_on:
+      - redis
+    command: uvicorn apps.app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - t2q-network
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.worker
+    container_name: t2q-worker
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///./data/trace2quality.db}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      AZURE_DEVOPS_ORG_URL: ${AZURE_DEVOPS_ORG_URL}
+      AZURE_DEVOPS_PROJECT: ${AZURE_DEVOPS_PROJECT}
+      CONFLUENCE_BASE_URL: ${CONFLUENCE_BASE_URL}
+      CONFLUENCE_SPACE: ${CONFLUENCE_SPACE}
+      CONFLUENCE_EMAIL: ${CONFLUENCE_EMAIL}
+      JIRA_BASE_URL: ${JIRA_BASE_URL}
+      JIRA_EMAIL: ${JIRA_EMAIL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+    volumes:
+      - ./data:/workspace/data
+      - ./apps/worker:/workspace/apps/worker
+      - ./packages:/workspace/packages
+    depends_on:
+      - redis
+    command: celery -A apps.worker.celery_app worker --loglevel=info
+    networks:
+      - t2q-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: t2q-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - t2q-network
+
+  # Uncomment for PostgreSQL (production-like)
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: t2q-postgres
+  #   environment:
+  #     POSTGRES_DB: trace2quality
+  #     POSTGRES_USER: t2q
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - t2q-network
+
+volumes:
+  redis_data:
+  # postgres_data:
+
+networks:
+  t2q-network:
+    driver: bridge

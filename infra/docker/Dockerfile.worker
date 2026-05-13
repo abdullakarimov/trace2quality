@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy project files
+COPY pyproject.toml ./
+COPY apps/worker ./apps/worker
+COPY packages ./packages
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -e ".[dev]"
+
+# Create data directories
+RUN mkdir -p data/artifacts data/cache
+
+CMD ["celery", "-A", "apps.worker.celery_app", "worker", "--loglevel=info"]
