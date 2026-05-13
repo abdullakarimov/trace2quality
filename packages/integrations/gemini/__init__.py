@@ -24,8 +24,8 @@ class GeminiClient(IntegrationClient):
 
     provider_type = IntegrationType.GEMINI
 
-        _COVERAGE_PROMPT = textwrap.dedent(
-                """\
+    _COVERAGE_PROMPT = textwrap.dedent(
+        """\
                 Ты — опытный QA-инженер. Выполни анализ тестового покрытия User Story
                 и сгенерируй страницу для Confluence.
 
@@ -93,7 +93,7 @@ class GeminiClient(IntegrationClient):
                                 - Считай AC «Покрыт» только если в переданных тест-кейсах есть ЯВНОЕ
                                         доказательство в названии/шаге/ожидании.
                                 - Если доказательство косвенное или неоднозначное — ставь «⚠️ Частично».
-        """
+            """
         )
 
     def __init__(self, config: dict[str, Any]):
