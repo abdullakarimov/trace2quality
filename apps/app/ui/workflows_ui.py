@@ -108,7 +108,12 @@ def _render_update_coverage_page(
 
             async function refreshRun() {{
                 const runResp = await fetch(`/api/runs/${{runId}}`);
-                if (!runResp.ok) return;
+                if (!runResp.ok) {{
+                    const msg = `Failed to load run status (HTTP ${{runResp.status}})`;
+                    document.getElementById("runStatus").textContent = msg;
+                    document.getElementById("runProgress").textContent = msg;
+                    return;
+                }}
                 const run = await runResp.json();
                 document.getElementById("runStatus").textContent = JSON.stringify(run, null, 2);
 

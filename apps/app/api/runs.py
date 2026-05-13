@@ -12,6 +12,13 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _status_to_str(status_value) -> str:
+    """Return normalized status string for Enum or plain string values."""
+    if hasattr(status_value, "value"):
+        return str(status_value.value)
+    return str(status_value or "unknown")
+
+
 def get_db(request: Request) -> Session:
     """Get database session"""
     settings = get_settings()
@@ -50,7 +57,7 @@ async def list_runs(
         result.append({
             "id": run.id,
             "workflow_key": run.workflow_key,
-            "status": run.status.value,
+            "status": _status_to_str(run.status),
             "created_at": run.created_at.isoformat(),
             "started_at": run.started_at.isoformat() if run.started_at else None,
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
@@ -89,7 +96,7 @@ async def get_run(run_id: str, request: Request, db: Session = Depends(get_db)) 
     return {
         "id": run.id,
         "workflow_key": run.workflow_key,
-        "status": run.status.value,
+        "status": _status_to_str(run.status),
         "parameters": run.parameters,
         "dry_run": run.dry_run == "1",
         "created_at": run.created_at.isoformat(),
