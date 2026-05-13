@@ -1,13 +1,11 @@
-.PHONY: help setup dev dev-app dev-worker stop test test-coverage lint format clean migrate migrate-docker docker-up docker-down docker-build demo migrate-data
+.PHONY: help setup dev stop test test-coverage lint format clean migrate migrate-docker docker-up docker-down docker-build demo migrate-data
 
 help:
 	@echo "Trace2Quality (t2q) - Developer Makefile"
 	@echo ""
 	@echo "Native development (recommended):"
 	@echo "  make setup        - Create venv, install deps, copy .env.example"
-	@echo "  make dev          - Start app + worker natively (requires local Redis)"
-	@echo "  make dev-app      - Start only the FastAPI app"
-	@echo "  make dev-worker   - Start only the Celery worker"
+	@echo "  make dev          - Start app natively (no background dependencies)"
 	@echo "  make stop         - Kill background dev processes"
 	@echo "  make migrate      - Run Alembic migrations (native)"
 	@echo ""
@@ -35,7 +33,6 @@ VENV := venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 UVICORN := $(VENV)/bin/uvicorn
-CELERY := $(VENV)/bin/celery
 ALEMBIC := $(VENV)/bin/alembic
 
 setup:
@@ -51,28 +48,17 @@ setup:
 	@echo ""
 	@echo "Next steps:"
 	@echo "  1. Edit .env and fill in your API tokens"
-	@echo "  2. Start Redis:  brew install redis && brew services start redis"
-	@echo "  3. Run:          make migrate && make dev"
+	@echo "  2. Run:          make migrate && make dev"
 
 dev: migrate
 	@echo "==> Starting Trace2Quality (native)..."
 	@echo "   App  → http://localhost:8000"
 	@echo "   Docs → http://localhost:8000/docs"
-	@echo "   Press Ctrl-C to stop all processes."
-	@trap 'kill 0' SIGINT; \
-	  PYTHONPATH=$(PWD) $(UVICORN) apps.app.main:app --reload --port 8000 & \
-	  PYTHONPATH=$(PWD) $(CELERY) -A apps.worker.celery_app worker --loglevel=info & \
-	  wait
-
-dev-app:
+	@echo "   Press Ctrl-C to stop."
 	PYTHONPATH=$(PWD) $(UVICORN) apps.app.main:app --reload --port 8000
-
-dev-worker:
-	PYTHONPATH=$(PWD) $(CELERY) -A apps.worker.celery_app worker --loglevel=info
 
 stop:
 	-pkill -f "uvicorn apps.app.main"
-	-pkill -f "celery.*apps.worker"
 	@echo "✓ Dev processes stopped"
 
 migrate:

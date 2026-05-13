@@ -1,10 +1,14 @@
 """Workflow API endpoints"""
 
+from datetime import datetime
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from apps.app.database import WorkflowRunModel, get_session_factory
 from apps.app.config import get_settings
+from apps.app.workflows import run_workflow
 from packages.common import WorkflowRunCreate, WorkflowType, get_logger
 
 logger = get_logger(__name__)
@@ -49,9 +53,6 @@ async def create_run(
         raise HTTPException(status_code=400, detail=f"Unknown workflow: {workflow_key}")
 
     # Create run record
-    from uuid import uuid4
-    from datetime import datetime
-
     run_id = str(uuid4())
     run = WorkflowRunModel(
         id=run_id,
@@ -69,8 +70,8 @@ async def create_run(
         extra={"run_id": run_id, "dry_run": run_config.dry_run},
     )
 
-    # TODO: Queue job in Celery
-    # celery_app.send_task(f"tasks.run_workflow", args=[run_id, workflow_key])
+    # Execute workflow synchronously
+    run_workflow(run_id, workflow_key)
 
     return {
         "run_id": run_id,

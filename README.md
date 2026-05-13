@@ -18,8 +18,7 @@ t2q orchestrates enterprise QA workflows through a web UI and REST API:
 ```
 trace2quality/
 ├── apps/
-│   ├── app/              # FastAPI web server + UI
-│   └── worker/           # Celery job worker
+│   └── app/              # FastAPI web server + UI
 ├── packages/
 │   ├── workflows/        # Domain logic (catalog, generation, coverage, triage, reporting)
 │   ├── integrations/     # External API clients (Azure DevOps, Confluence, Jira, Gemini)
@@ -36,15 +35,14 @@ trace2quality/
 | Layer | Technology |
 |-------|-----------|
 | Backend | FastAPI + SQLAlchemy + Pydantic |
-| Task Queue | Celery + Redis |
 | Database | SQLite (dev), PostgreSQL (production) |
 | Frontend | Server-rendered Jinja2 + HTMX |
-| Gemini | Direct REST API (httpx) — no heavy SDK |
+| Gemini | google-genai SDK + 10s rate limiting |
 | Testing | pytest + pytest-asyncio |
 | External APIs | Azure DevOps REST, Confluence Cloud, Jira Cloud, Google Gemini |
 
-> **Docker is optional.** The app runs fine with a Python venv, a local Redis, and SQLite.
-> Docker Compose is provided as a convenience for CI or fresh-machine setup only.
+> **No external dependencies required.** The app runs on Python venv + SQLite only.
+> Docker Compose is provided as optional convenience for fresh-machine setup only.
 
 ---
 
@@ -53,7 +51,6 @@ trace2quality/
 ### Prerequisites
 
 - Python 3.11+
-- Redis — `brew install redis && brew services start redis` on macOS
 
 ### 1. Clone and set up
 
@@ -69,7 +66,7 @@ Edit `.env` and fill in your tokens (see **Getting API Tokens** below).
 
 ```bash
 make migrate        # creates/upgrades SQLite database
-make dev            # starts FastAPI app + Celery worker
+make dev            # starts FastAPI app
 ```
 
 That's it. Open http://localhost:8000.
@@ -215,7 +212,6 @@ APP_SECRET_KEY=<another strong random string>
 | `APP_ENCRYPTION_KEY` | **Yes** | Fernet key for encrypting stored tokens |
 | `APP_SECRET_KEY` | **Yes** | Secret for session signing |
 | `DATABASE_URL` | No | SQLite path or PostgreSQL URL |
-| `REDIS_URL` | No | Redis broker URL (default: `redis://localhost:6379/0`) |
 | `AZURE_DEVOPS_ORG_URL` | For Azure | `https://dev.azure.com/your-org` |
 | `AZURE_DEVOPS_PROJECT` | For Azure | Project name |
 | `AZURE_DEVOPS_PAT` | For Azure | Personal Access Token |

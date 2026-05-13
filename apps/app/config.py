@@ -23,12 +23,7 @@ class Settings(BaseSettings):
     # === Database ===
     database_url: str = "sqlite:///./data/trace2quality.db"
 
-    # === Redis ===
-    redis_url: str = "redis://localhost:6379/0"
 
-    # === Celery ===
-    celery_broker_url: str = "redis://localhost:6379/0"
-    celery_result_backend: str = "redis://localhost:6379/1"
 
     # === Azure DevOps ===
     azure_devops_org_url: str = "https://dev.azure.com/yourorg"

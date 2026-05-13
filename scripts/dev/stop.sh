@@ -19,11 +19,9 @@ kill_pid() {
   fi
 }
 
-kill_pid "$PID_DIR/app.pid"    "FastAPI app"
-kill_pid "$PID_DIR/worker.pid" "Celery worker"
+kill_pid "$PID_DIR/app.pid" "FastAPI app"
 
 # Belt-and-suspenders: also kill by pattern in case PIDs drifted
 pkill -f "uvicorn apps.app.main" 2>/dev/null || true
-pkill -f "celery.*apps.worker"   2>/dev/null || true
 
 green "✓ Dev processes stopped"
