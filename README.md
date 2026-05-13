@@ -1,20 +1,17 @@
 # Trace2Quality (t2q)
 
-Enterprise QA automation and traceability platform. Trace2Quality connects requirements, tests, and execution artifacts across Azure DevOps, Confluence, Jira, and AI-powered test generation.
-
-**Previous name:** spec2test  
-**Current name:** Trace2Quality (t2q)  
-**Status:** Phase 1 - Foundation (🚧 under development)
+Enterprise QA automation and traceability platform. Trace2Quality connects requirements, tests, and execution artifacts across Azure DevOps, Confluence, Jira, and AI-powered test generation via Google Gemini.
 
 ## What is Trace2Quality?
 
-t2q is a web application that orchestrates enterprise QA workflows:
+t2q orchestrates enterprise QA workflows through a web UI and REST API:
 
-- **Catalog Management**: Fetch and index API specs, user stories, and documentation from Confluence and Jira
-- **Test Generation**: AI-powered (Gemini) generation of API and UI test cases
-- **Coverage Tracking**: Link tests to requirements, update coverage metrics in Confluence
-- **Bug Triage**: Intelligent categorization and automation linking of QA defects
-- **Run History & Artifacts**: Persistent storage of workflow executions, logs, and outputs
+- **Catalog Management** — Fetch and index specs, user stories, and docs from Confluence and Jira
+- **Test Generation** — AI-powered (Gemini) generation of API and UI test cases
+- **Coverage Tracking** — Link tests to requirements, update coverage metrics in Confluence
+- **Bug Triage** — Classify defects and surface automation gaps
+- **Scheduling & Webhooks** — Schedule recurring workflows or trigger them via GitHub/Jira/Confluence events
+- **Workflow Composition** — Chain multiple workflows into a single orchestrated execution
 
 ## Architecture
 
@@ -26,162 +23,237 @@ trace2quality/
 ├── packages/
 │   ├── workflows/        # Domain logic (catalog, generation, coverage, triage, reporting)
 │   ├── integrations/     # External API clients (Azure DevOps, Confluence, Jira, Gemini)
-│   └── common/           # Shared models, utilities, constants
+│   └── common/           # Shared models, utilities, logging
 ├── infra/
-│   ├── docker/           # Dockerfiles & Docker Compose
+│   ├── docker/           # Dockerfiles
 │   └── migrations/       # Alembic database migrations
-├── docs/
-│   ├── architecture/     # Technical design docs
-│   ├── api/              # API reference
-│   └── operations/       # Deployment & ops guides
-└── scripts/
-    ├── dev/              # Development utilities
-    └── data_migration/   # Legacy data import tools
+├── docs/                 # API reference, design, and operations guides
+└── scripts/              # Demo and data migration utilities
 ```
 
 ## Tech Stack
 
-- **Backend**: FastAPI + SQLAlchemy + Pydantic
-- **Task Queue**: Celery + Redis
-- **Database**: SQLite (dev), PostgreSQL (production)
-- **Frontend**: Server-rendered Jinja2 + HTMX + Alpine.js
-- **Containerization**: Docker Compose
-- **Testing**: pytest + pytest-asyncio
-- **External APIs**: Azure DevOps REST, Confluence Cloud, Jira Cloud, Google Gemini
+| Layer | Technology |
+|-------|-----------|
+| Backend | FastAPI + SQLAlchemy + Pydantic |
+| Task Queue | Celery + Redis |
+| Database | SQLite (dev), PostgreSQL (production) |
+| Frontend | Server-rendered Jinja2 |
+| Containers | Docker Compose |
+| Testing | pytest + pytest-asyncio |
+| External APIs | Azure DevOps REST, Confluence Cloud, Jira Cloud, Google Gemini |
 
-## Quick Start (Local Development)
+---
+
+## Quick Start
 
 ### Prerequisites
 
 - Docker & Docker Compose
 - Python 3.11+
-- Make (optional, but recommended)
 
-### Setup
+### 1. Clone and configure
 
-1. **Clone and initialize**
-   ```bash
-   cd /Users/abdulla/stuff/t2q
-   cp .env.example .env
-   # Edit .env with your API tokens
-   ```
+```bash
+git clone https://github.com/abdullakarimov/trace2quality.git
+cd trace2quality
+cp .env.example .env
+# Fill in your tokens — see "Getting API Tokens" below
+```
 
-2. **Start services**
-   ```bash
-   docker-compose up -d
-   ```
+### 2. Start services
 
-3. **Run migrations**
-   ```bash
-   docker-compose exec app alembic upgrade head
-   ```
+```bash
+docker-compose up -d
+```
 
-4. **Open app**
-   - Web UI: http://localhost:8000
-   - Celery Flower (job monitoring): http://localhost:5555 (optional, needs separate container)
+### 3. Run migrations
 
-### Manual Python Setup (if not using Docker)
+```bash
+docker-compose exec app alembic upgrade head
+```
+
+### 4. Open the app
+
+| URL | Purpose |
+|-----|---------|
+| http://localhost:8000 | Web UI |
+| http://localhost:8000/docs | Swagger API docs |
+| http://localhost:8000/redoc | ReDoc API docs |
+
+### Manual Setup (without Docker)
 
 ```bash
 python -m venv venv
 source venv/bin/activate
 pip install -e ".[dev]"
-export PYTHONPATH=/Users/abdulla/stuff/t2q
+export PYTHONPATH=$(pwd)
 
-# Start Redis separately
+# Terminal 1: Redis
 redis-server
 
-# In one terminal: app
-cd apps/app
-uvicorn main:app --reload
+# Terminal 2: FastAPI app
+uvicorn apps.app.main:app --reload --port 8000
 
-# In another terminal: worker
-cd apps/worker
-celery -A celery_app worker --loglevel=info
+# Terminal 3: Celery worker
+celery -A apps.worker.celery_app worker --loglevel=info
 ```
 
-## Configuration
+---
 
-Create `.env` from `.env.example`:
+## Getting API Tokens
+
+Trace2Quality requires one token per integration you want to use. Configure them in `.env` or via **Settings → Integrations** in the UI.
+
+### Azure DevOps — Personal Access Token (PAT)
+
+A PAT authenticates against the Azure DevOps REST API to read test plans and create/update test cases.
+
+1. Sign in to [dev.azure.com](https://dev.azure.com) and open your organisation.
+2. Click your profile avatar (top-right) → **Personal access tokens**.
+3. Click **New Token**.
+4. Set a name (e.g. `trace2quality`), choose an expiry, and select the **Scopes**:
+   - **Work Items**: Read & Write
+   - **Test Management**: Read & Write
+5. Click **Create** and copy the token — it is only shown once.
+6. Add to `.env`:
+   ```env
+   AZURE_DEVOPS_ORG_URL=https://dev.azure.com/your-org
+   AZURE_DEVOPS_PROJECT=YourProjectName
+   AZURE_DEVOPS_PAT=<paste token here>
+   ```
+
+> **Docs**: [Azure DevOps PAT documentation](https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate)
+
+---
+
+### Confluence Cloud — API Token
+
+Used to read and write Confluence pages (requirements catalog, coverage reports).
+
+1. Go to [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
+2. Click **Create API token**.
+3. Give it a label (e.g. `trace2quality`) and click **Create**.
+4. Copy the token — it is only shown once.
+5. Add to `.env`:
+   ```env
+   CONFLUENCE_BASE_URL=https://your-domain.atlassian.net/wiki
+   CONFLUENCE_SPACE=YOURSPACE
+   CONFLUENCE_EMAIL=your.email@domain.com
+   CONFLUENCE_API_TOKEN=<paste token here>
+   ```
+
+> The app authenticates using **Basic Auth** (`email:token` base-64 encoded), which is the standard for Confluence Cloud REST API.
+
+> **Docs**: [Atlassian API tokens](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)
+
+---
+
+### Jira Cloud — API Token
+
+Used to query issues and update tickets (bug triage, QA tasks).
+
+1. Use the **same API token** generated for Confluence above — Atlassian tokens are account-wide and work for both Confluence and Jira.
+2. Add to `.env`:
+   ```env
+   JIRA_BASE_URL=https://your-domain.atlassian.net
+   JIRA_EMAIL=your.email@domain.com
+   JIRA_API_TOKEN=<same Atlassian token>
+   ```
+
+> **Docs**: [Jira Cloud REST API authentication](https://developer.atlassian.com/cloud/jira/platform/basic-auth-for-rest-apis/)
+
+---
+
+### Google Gemini — API Key
+
+Used for AI-powered test case generation and coverage analysis.
+
+1. Go to [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey).
+2. Click **Create API key** and select a Google Cloud project (or create one).
+3. Copy the generated key.
+4. Add to `.env`:
+   ```env
+   GEMINI_API_KEY=<paste key here>
+   GEMINI_MODEL=gemini-pro
+   ```
+
+> **Free tier**: Google AI Studio offers a free quota sufficient for development use. For production workloads, use a billed project via [Google Cloud Vertex AI](https://cloud.google.com/vertex-ai/docs/generative-ai/model-reference/gemini).
+
+> **Docs**: [Google AI Studio API keys](https://ai.google.dev/gemini-api/docs/api-key)
+
+---
+
+### Encryption Key
+
+All integration tokens are encrypted at rest using Fernet symmetric encryption. Generate a strong key:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
 ```env
-# Required
-APP_ENCRYPTION_KEY=<strong-random-key>
-REDIS_URL=redis://localhost:6379/0
-DATABASE_URL=sqlite:///./data/trace2quality.db
-
-# Integrations (get tokens from each provider)
-AZURE_DEVOPS_PAT=<your-pat>
-CONFLUENCE_API_TOKEN=<your-token>
-JIRA_API_TOKEN=<your-token>
-GEMINI_API_KEY=<your-key>
+APP_ENCRYPTION_KEY=<output from above>
+APP_SECRET_KEY=<another strong random string>
 ```
+
+> **Never commit your `.env` file.** It is excluded by `.gitignore`.
+
+---
+
+## Configuration Reference
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `APP_ENV` | No | `development` or `production` (default: `development`) |
+| `APP_ENCRYPTION_KEY` | **Yes** | Fernet key for encrypting stored tokens |
+| `APP_SECRET_KEY` | **Yes** | Secret for session signing |
+| `DATABASE_URL` | No | SQLite path or PostgreSQL URL |
+| `REDIS_URL` | No | Redis broker URL (default: `redis://localhost:6379/0`) |
+| `AZURE_DEVOPS_ORG_URL` | For Azure | `https://dev.azure.com/your-org` |
+| `AZURE_DEVOPS_PROJECT` | For Azure | Project name |
+| `AZURE_DEVOPS_PAT` | For Azure | Personal Access Token |
+| `CONFLUENCE_BASE_URL` | For Confluence | `https://your-domain.atlassian.net/wiki` |
+| `CONFLUENCE_SPACE` | For Confluence | Space key (e.g. `QA`) |
+| `CONFLUENCE_EMAIL` | For Confluence | Your Atlassian account email |
+| `CONFLUENCE_API_TOKEN` | For Confluence | Atlassian API token |
+| `JIRA_BASE_URL` | For Jira | `https://your-domain.atlassian.net` |
+| `JIRA_EMAIL` | For Jira | Your Atlassian account email |
+| `JIRA_API_TOKEN` | For Jira | Atlassian API token (same as Confluence) |
+| `GEMINI_API_KEY` | For AI features | Google AI Studio API key |
+| `GEMINI_MODEL` | No | Model name (default: `gemini-pro`) |
+
+---
 
 ## Running Workflows
 
-### Web UI (Recommended)
+### Via Web UI
 
-1. Go to http://localhost:8000
-2. Configure integrations: **Settings → Integrations**
-3. Run workflows: **Workflows** tab
-4. View runs: **Runs** tab
-5. Explore data: **Data Explorer** tab
+1. Open http://localhost:8000
+2. Go to **Settings → Integrations** and configure your tokens
+3. Click **Test Connection** to validate each integration
+4. Navigate to **Workflows** and trigger a run
+5. Monitor progress under **Runs**
+6. Download outputs from **Data Explorer**
 
-### CLI (Optional)
+### Via API
 
 ```bash
-# Check current fixtures (after running)
-python -m apps.worker.cli run-workflow --workflow fetch-catalog --dry-run
+# Trigger a workflow
+curl -X POST http://localhost:8000/api/workflows/fetch_confluence/runs \
+  -H "Content-Type: application/json" \
+  -d '{"parameters": {"space": "QA", "labels": ["requirements"]}}'
 
-# Run workflow
-python -m apps.worker.cli run-workflow --workflow generate-api-tests --project MyProject
+# Check run status
+curl http://localhost:8000/api/runs/{run_id}
+
+# List recent runs
+curl http://localhost:8000/api/runs
 ```
 
-## Project Phases
-
-### Phase 1: Foundation ✅ (In Progress)
-- Monorepo scaffolding
-- Integration settings & encrypted secrets
-- Job framework & run persistence
-- Basic workflow execution
-
-### Phase 2: Core Workflows (Next)
-- Catalog fetch from Confluence/Jira
-- API/UI test case generation with Gemini
-- Coverage page updates
-
-### Phase 3: Advanced Workflows
-- Bug triage and classification
-- Automation association from test runs
-- Progress reports and metrics
-
-### Phase 4: Hardening
-- Comprehensive test suite
-- Observability & logging
-- Migration tools for legacy data
-- Complete documentation
-
-## Key Features (When Implemented)
-
-- 🔐 **Secure Credentials**: Encrypted token storage, no copy-paste cURL commands
-- 📦 **Modular Workflows**: Independent, testable, reusable services
-- 🔄 **Job Orchestration**: Queued execution, retry logic, idempotent operations
-- 📊 **Run History**: Persistent logs, artifacts, and metrics
-- 🌐 **Multi-Tenant Ready**: Single-user initially, extensible for organizations
-- 🔌 **Provider Abstractions**: Easy to add new integrations (AWS, GCP, GitHub, etc.)
-- 📲 **Real-Time Updates**: WebSocket support for live job status (future)
-
-## Security Considerations
-
-- All secrets encrypted at application level using `APP_ENCRYPTION_KEY`
-- Never logs full tokens or sensitive data
-- PAT/API token validation on connection test
-- Rotate credentials without server restart
-- Default to SQLite (no network exposure); PostgreSQL optional for production
+---
 
 ## Development
-
-### Code Style
 
 ```bash
 # Format
@@ -193,75 +265,28 @@ ruff check apps packages --fix
 # Type checking
 mypy apps packages
 
-# Sort imports
-isort apps packages
-```
+# Run tests
+pytest tests/ -v --cov
 
-### Testing
-
-```bash
-pytest apps packages -v --cov
-```
-
-### Database Migrations
-
-```bash
-# Create new migration
-alembic revision --autogenerate -m "Add new table"
+# Create a new DB migration
+alembic revision --autogenerate -m "description"
 
 # Apply migrations
 alembic upgrade head
-
-# Rollback
-alembic downgrade -1
 ```
 
-## API Documentation
+---
 
-FastAPI auto-generates OpenAPI docs at:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+## Security Notes
 
-Key endpoints:
-- `POST /api/integrations/{type}/test` - Test connection to provider
-- `GET /api/integrations` - List configured integrations
-- `POST /api/workflows/{workflow_key}/runs` - Trigger workflow
-- `GET /api/runs` - List all runs
-- `GET /api/runs/{id}` - Get run details and logs
+- All credentials stored encrypted (Fernet AES-128) — never in plain text
+- Tokens are masked in all log output
+- `.env` is excluded from version control
+- Rotate any token from the UI without restarting the server
+- Use PostgreSQL + a secrets manager (e.g. AWS Secrets Manager, Vault) in production
 
-## Known Gaps & Next Steps
-
-1. **WebSocket Live Updates**: Currently uses polling; WebSocket would improve UX
-2. **Data Migration**: Need scripts to import legacy `data/` and `output/` artifacts
-3. **OAuth Support**: Jira/Confluence/Azure DevOps OAuth (PAT/API token priority now)
-4. **Multi-Tenancy**: Initial single-user, but schema ready for organizations
-5. **Webhook Sync**: Real-time syncs from providers (currently manual trigger)
-6. **Test Coverage**: Core workflows need 80%+ test coverage
-
-## Migration from spec2test
-
-Old project structure → New project structure:
-
-| Old | New |
-|-----|-----|
-| `test_generators/` | `packages/workflows/` |
-| `test_generators/fetch/` | `packages/workflows/catalog/` |
-| `test_generators/generate/` | `packages/workflows/generation/` |
-| `integrations/` (implicit) | `packages/integrations/` |
-| One-off scripts | Workflow modules + UI |
-| cURL replay auth | Token-based auth (PAT, API keys) |
-| `data/` outputs | Persisted run artifacts + database |
-
-## Support & Contributing
-
-For issues, ideas, or contributions, open a GitHub issue or pull request.
+---
 
 ## License
 
 MIT
-
----
-
-**Last Updated**: May 2026  
-**Version**: 0.1.0-alpha  
-**Project Lead**: Trace2Quality Team
