@@ -11,6 +11,7 @@ from apps.app.config import get_settings
 from apps.app.workflows import enqueue_workflow
 from packages.common import (
     UpdateCoverageRunRequest,
+    TriageBugTicketsRunRequest,
     WorkflowRunCreate,
     WorkflowType,
     get_logger,
@@ -130,6 +131,53 @@ async def create_update_coverage_run(
     return {
         "run_id": run_id,
         "workflow_key": "update_coverage",
+        "status": "queued",
+        "accepted_parameters": accepted_params,
+        "queue": queue_info.get("queue"),
+        "task_id": queue_info.get("task_id"),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.post("/triage-bugs/runs")
+async def create_triage_bugs_run(
+    payload: TriageBugTicketsRunRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Create a triage_bugs run via stable JSON API contract.
+
+    When `apply` is False (default) the workflow runs in dry-run mode: it
+    evaluates every bug and reports what it would do but makes no changes to Jira.
+    Set `apply: true` to actually update severity/impact fields, transition issues,
+    and add triage comments.
+    """
+    correlation_id = getattr(request.state, "correlation_id", None)
+
+    run_id = str(uuid4())
+    accepted_params = payload.model_dump()
+
+    run = WorkflowRunModel(
+        id=run_id,
+        workflow_key="triage_bugs",
+        parameters=accepted_params,
+        dry_run="0" if payload.apply else "1",
+        status="queued",
+    )
+    db.add(run)
+    db.commit()
+
+    queue_info = enqueue_workflow(run_id, "triage_bugs")
+
+    logger.info(
+        "Created triage_bugs run",
+        correlation_id=correlation_id,
+        extra={"run_id": run_id, "apply": payload.apply, "max_results": payload.max_results},
+    )
+
+    return {
+        "run_id": run_id,
+        "workflow_key": "triage_bugs",
         "status": "queued",
         "accepted_parameters": accepted_params,
         "queue": queue_info.get("queue"),

@@ -11,6 +11,7 @@ from packages.common.models import (
     WorkflowParameter,
     WorkflowRunCreate,
     UpdateCoverageRunRequest,
+    TriageBugTicketsRunRequest,
     WorkflowRunResponse,
     WorkflowType,
 )

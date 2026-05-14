@@ -114,6 +114,29 @@ class UpdateCoverageRunRequest(BaseModel):
         return self
 
 
+class TriageBugTicketsRunRequest(BaseModel):
+    """Request payload for triage_bugs workflow."""
+
+    jql: str = Field(
+        default='issuetype in ("BE BUG", "Mobile bug", Bug, "FE bug") AND status = Backlog',
+        description="JQL query selecting bug issues to triage",
+    )
+    max_results: int = Field(default=50, ge=1, le=500, description="Maximum bugs to process")
+    apply: bool = Field(default=False, description="When False, runs in dry-run mode without modifying Jira")
+    severity_field_id: str = Field(
+        default="customfield_10865", description="Jira custom field ID for Severity"
+    )
+    impact_field_id: str = Field(
+        default="customfield_10004", description="Jira custom field ID for Impact"
+    )
+    target_status: str = Field(
+        default="Triage", description="Jira status name to transition confirmed bugs into"
+    )
+    batch_delay_seconds: int = Field(
+        default=10, ge=0, le=60, description="Seconds to wait between Gemini API calls"
+    )
+
+
 class WorkflowRunResponse(BaseModel):
     """Workflow run response"""
     id: str

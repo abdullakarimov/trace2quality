@@ -406,5 +406,114 @@ Return ONLY valid JSON object with keys:
             cleaned = cleaned[: -len("```")].strip()
         return cleaned
 
+    async def assess_bug(
+        self,
+        us_content: str,
+        bug_title: str,
+        bug_description: str,
+    ) -> dict[str, Any]:
+        """Assess whether a bug ticket describes a real defect and determine severity/impact.
+
+        Returns a dict with:
+        - is_real_bug: bool
+        - severity: "Critical" | "Major" | "Minor"
+        - impact: one of the four JIRA impact values
+        - reasoning: short explanation
+        """
+        if not self.api_key:
+            return {
+                "is_real_bug": False,
+                "severity": "Major",
+                "impact": "Moderate / Limited",
+                "priority": "Medium",
+                "reasoning": "Gemini API key not configured",
+            }
+
+        prompt = f"""You are a QA expert reviewing a bug ticket for triage.
+
+Given a user story specification and a bug report, determine:
+1. Is this a REAL bug (not a feature request, documentation issue, or user misunderstanding)?
+2. If real: What is the severity level?
+3. If real: What is the business impact?
+
+User Story (Specification):
+{us_content[:8000]}
+
+Bug Title:
+{bug_title}
+
+Bug Description:
+{bug_description[:4000]}
+
+Respond with valid JSON only (no markdown):
+{{
+    "is_real_bug": true or false,
+    "severity": "Critical" or "Major" or "Minor",
+    "impact": "Extensive / Widespread" or "Significant / Large" or "Moderate / Limited" or "Minor / Localized",
+    "priority": "Highest" or "High" or "Medium" or "Low" or "Lowest",
+    "reasoning": "Brief explanation"
+}}
+
+SEVERITY GUIDE:
+- Critical: system crash, data loss, security breach, or complete feature unavailability
+- Major: core feature broken but workaround exists; significant user impact
+- Minor: cosmetic issues, edge cases, minor UX problems
+
+IMPACT GUIDE:
+- Extensive / Widespread: affects all or most users / all environments
+- Significant / Large: affects many users or multiple key workflows
+- Moderate / Limited: affects some users or a non-critical workflow
+- Minor / Localized: affects very few users or a rarely used feature
+
+PRIORITY GUIDE:
+- Highest: Critical severity + Extensive impact; blocks a release or causes data loss
+- High: Critical/Major severity + Significant impact; core feature broken
+- Medium: Major severity + Moderate impact; workaround available
+- Low: Minor severity or Minor/Localized impact
+- Lowest: Cosmetic or very edge-case issues
+
+If NOT a real bug, set priority to "Low" and explain why in reasoning."""
+
+        try:
+            text = await self._generate_with_retry(
+                prompt, max_attempts=3, base_backoff_seconds=_RATE_LIMIT_SECONDS
+            )
+            if text:
+                result = self._parse_json(text)
+                severity = result.get("severity", "Major")
+                impact = result.get("impact", "Moderate / Limited")
+                priority = result.get("priority", "Medium")
+
+                # Validate against allowed JIRA values
+                if severity not in ("Critical", "Major", "Minor"):
+                    severity = "Major"
+                if impact not in (
+                    "Extensive / Widespread",
+                    "Significant / Large",
+                    "Moderate / Limited",
+                    "Minor / Localized",
+                ):
+                    impact = "Moderate / Limited"
+                if priority not in ("Highest", "High", "Medium", "Low", "Lowest"):
+                    priority = "Medium"
+
+                return {
+                    "is_real_bug": bool(result.get("is_real_bug", False)),
+                    "severity": severity,
+                    "impact": impact,
+                    "priority": priority,
+                    "reasoning": str(result.get("reasoning", "")),
+                }
+        except Exception as e:
+            logger.error(f"Gemini bug assessment failed: {str(e)}")
+
+        return {
+            "is_real_bug": False,
+            "severity": "Major",
+            "impact": "Moderate / Limited",
+            "priority": "Medium",
+            "reasoning": "Assessment failed",
+        }
+
 
 __all__ = ["GeminiClient"]

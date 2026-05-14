@@ -378,6 +378,47 @@ def run_workflow(run_id: str, workflow_key: str):
             workflow_result = result
             log_step("INFO", "Coverage pages updated", correlation_id=correlation_id)
 
+        elif workflow_key == "triage_bugs":
+            log_step("INFO", "Triaging bug tickets", correlation_id=correlation_id)
+
+            jira_client = integration_registry.get_client(
+                IntegrationType.JIRA,
+                _resolve_integration_config(session, IntegrationType.JIRA),
+            )
+            confluence_client = integration_registry.get_client(
+                IntegrationType.CONFLUENCE,
+                _resolve_integration_config(session, IntegrationType.CONFLUENCE),
+            )
+            gemini_client = integration_registry.get_client(
+                IntegrationType.GEMINI,
+                _resolve_integration_config(session, IntegrationType.GEMINI),
+            )
+
+            result = asyncio.run(
+                triage.run_triage_bugs_workflow(
+                    jira_client=jira_client,
+                    confluence_client=confluence_client,
+                    gemini_client=gemini_client,
+                    jql=params.get("jql", triage.DEFAULT_BUG_JQL),
+                    max_results=int(params.get("max_results", 50)),
+                    apply=bool(params.get("apply", False)),
+                    severity_field_id=str(params.get("severity_field_id", triage.DEFAULT_SEVERITY_FIELD_ID)),
+                    impact_field_id=str(params.get("impact_field_id", triage.DEFAULT_IMPACT_FIELD_ID)),
+                    target_status=str(params.get("target_status", triage.DEFAULT_TARGET_STATUS)),
+                    batch_delay_seconds=int(params.get("batch_delay_seconds", 10)),
+                    correlation_id=correlation_id,
+                    log_fn=lambda level, message: log_step(level, message, correlation_id=correlation_id),
+                )
+            )
+            workflow_result = result
+            triage_summary = result.get("summary", {})
+            log_step(
+                "INFO",
+                f"Triage complete: triaged={triage_summary.get('bugs_triaged', 0)}"
+                f"/{triage_summary.get('bugs_fetched', 0)}",
+                correlation_id=correlation_id,
+            )
+
         else:
             log_step("WARNING", f"Unknown workflow: {workflow_key}", correlation_id=correlation_id)
             run.status = "failed"
@@ -398,6 +439,9 @@ def run_workflow(run_id: str, workflow_key: str):
                 )
                 if workflow_result.get("errors"):
                     _persist_artifact(session, run_id, "errors.json", workflow_result.get("errors", []))
+            elif workflow_key == "triage_bugs":
+                _persist_artifact(session, run_id, "triage_summary.json", workflow_result.get("summary", {}))
+                _persist_artifact(session, run_id, "per_issue_results.json", workflow_result.get("per_issue_results", []))
 
         run.status = "succeeded"
         run.completed_at = _utc_now()
