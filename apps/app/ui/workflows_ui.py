@@ -98,6 +98,9 @@ def _render_update_coverage_page(
             let done = false;
             const monitorStartedAt = Date.now();
             let lastLogTimestamp = null;
+            const POLL_INTERVAL_MS = 1000;
+            const ARTIFACT_POLL_EVERY_TICKS = 5;
+            let tickCount = 0;
 
             function fmtElapsed(ms) {{
                 const sec = Math.floor(ms / 1000);
@@ -165,43 +168,51 @@ def _render_update_coverage_page(
                     }}
                 }}
 
-                const artifactResp = await fetch(`/api/artifacts/run/${{runId}}`);
-                if (artifactResp.ok) {{
-                    const artifacts = await artifactResp.json();
-                    const linksEl = document.getElementById("artifactLinks");
-                    linksEl.innerHTML = "";
-                    for (const item of artifacts) {{
-                        const li = document.createElement("li");
-                        const a = document.createElement("a");
-                        a.href = item.download_url;
-                        a.textContent = item.filename;
-                        li.appendChild(a);
-                        linksEl.appendChild(li);
-                    }}
+                // Artifacts are heavier and change less frequently than status/logs.
+                // Poll them every N ticks during run, and once on terminal state.
+                const shouldPollArtifacts =
+                    (tickCount % ARTIFACT_POLL_EVERY_TICKS === 0) ||
+                    ["succeeded", "failed", "canceled"].includes(run.status);
 
-                    const summaryArtifact = artifacts.find((a) => a.filename === "run_summary.json");
-                    if (summaryArtifact) {{
-                        const summaryResp = await fetch(summaryArtifact.download_url);
-                        if (summaryResp.ok) {{
-                            const summary = await summaryResp.json();
-                            document.getElementById("countTotal").textContent = summary.total ?? 0;
-                            document.getElementById("countSucceeded").textContent = summary.succeeded ?? 0;
-                            document.getElementById("countFailed").textContent = summary.failed ?? 0;
-                            document.getElementById("countSkipped").textContent = summary.skipped ?? 0;
+                if (shouldPollArtifacts) {{
+                    const artifactResp = await fetch(`/api/artifacts/run/${{runId}}`);
+                    if (artifactResp.ok) {{
+                        const artifacts = await artifactResp.json();
+                        const linksEl = document.getElementById("artifactLinks");
+                        linksEl.innerHTML = "";
+                        for (const item of artifacts) {{
+                            const li = document.createElement("li");
+                            const a = document.createElement("a");
+                            a.href = item.download_url;
+                            a.textContent = item.filename;
+                            li.appendChild(a);
+                            linksEl.appendChild(li);
                         }}
-                    }}
 
-                    const perItemArtifact = artifacts.find((a) => a.filename === "per_item_results.json");
-                    if (perItemArtifact) {{
-                        const resultResp = await fetch(perItemArtifact.download_url);
-                        if (resultResp.ok) {{
-                            const rows = await resultResp.json();
-                            const body = document.getElementById("resultsTableBody");
-                            body.innerHTML = "";
-                            for (const row of rows) {{
-                                const tr = document.createElement("tr");
-                                tr.innerHTML = `<td>${{row.us_code || ""}}</td><td>${{row.action || ""}}</td><td>${{row.tc_page_id || ""}}</td><td>${{row.message || ""}}</td>`;
-                                body.appendChild(tr);
+                        const summaryArtifact = artifacts.find((a) => a.filename === "run_summary.json");
+                        if (summaryArtifact) {{
+                            const summaryResp = await fetch(summaryArtifact.download_url);
+                            if (summaryResp.ok) {{
+                                const summary = await summaryResp.json();
+                                document.getElementById("countTotal").textContent = summary.total ?? 0;
+                                document.getElementById("countSucceeded").textContent = summary.succeeded ?? 0;
+                                document.getElementById("countFailed").textContent = summary.failed ?? 0;
+                                document.getElementById("countSkipped").textContent = summary.skipped ?? 0;
+                            }}
+                        }}
+
+                        const perItemArtifact = artifacts.find((a) => a.filename === "per_item_results.json");
+                        if (perItemArtifact) {{
+                            const resultResp = await fetch(perItemArtifact.download_url);
+                            if (resultResp.ok) {{
+                                const rows = await resultResp.json();
+                                const body = document.getElementById("resultsTableBody");
+                                body.innerHTML = "";
+                                for (const row of rows) {{
+                                    const tr = document.createElement("tr");
+                                    tr.innerHTML = `<td>${{row.us_code || ""}}</td><td>${{row.action || ""}}</td><td>${{row.tc_page_id || ""}}</td><td>${{row.message || ""}}</td>`;
+                                    body.appendChild(tr);
+                                }}
                             }}
                         }}
                     }}
@@ -213,8 +224,9 @@ def _render_update_coverage_page(
             }}
 
             async function tick() {{
+                tickCount += 1;
                 try {{ await refreshRun(); }} catch (e) {{}}
-                if (!done) setTimeout(tick, 1000);
+                if (!done) setTimeout(tick, POLL_INTERVAL_MS);
             }}
             tick();
         </script>

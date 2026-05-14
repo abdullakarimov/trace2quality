@@ -17,6 +17,9 @@ logger = get_logger(__name__)
 # Restrict coverage Azure suite discovery to specific plans only.
 _ALLOWED_AZURE_PLAN_IDS = {"438", "2015"}
 
+API_PLAN_ID = 2015
+UI_PLAN_ID = 438
+
 STUB_CONTENT_THRESHOLD = 260
 
 
@@ -262,11 +265,11 @@ async def _fetch_provider_api_docs(confluence_client, log_fn=None) -> list[dict[
 
 
 def _ensure_related_links_section(body_html: str, related_links_html: str) -> str:
-    marker = '<h2 id="related-links">Related Links</h2>'
+    marker = "<h2>4. Связанные ссылки</h2>"
     if marker in body_html:
-        head = body_html.split(marker)[0]
-        return f"{head}{related_links_html}"
-    return f"{body_html}\n{related_links_html}"
+        head = body_html.split(marker)[0].strip()
+        return f"{head}\n{related_links_html}"
+    return f"{body_html.strip()}\n{related_links_html}"
 
 
 def _sanitize_storage_html(raw_html: str) -> str:
@@ -284,10 +287,24 @@ def _sanitize_storage_html(raw_html: str) -> str:
 def _minimal_storage_html(us_code: str, tc_title: str, message: str) -> str:
     safe_message = message.replace("<", "&lt;").replace(">", "&gt;")
     return (
-        f"<h1>{tc_title}</h1>"
-        f"<p><strong>User Story:</strong> {us_code}</p>"
+        "<h2>1. Покрытие критериев приёмки</h2>"
+        "<table>"
+        "<tr><th>Критерий приёмки</th><th>Покрывающие тест-кейсы</th><th>Статус</th></tr>"
+        "</table>"
+        "<h2>2. Пробелы в покрытии</h2>"
         f"<p>{safe_message}</p>"
-        f"<p>Generated at {_utc_now_iso()}</p>"
+        "<h2>3. Итоговая сводка</h2>"
+        "<table>"
+        "<tr><th>Метрика</th><th>Значение</th></tr>"
+        "<tr><td>Всего критериев приёмки</td><td>0</td></tr>"
+        "<tr><td>Покрыто полностью</td><td>0</td></tr>"
+        "<tr><td>Покрыто частично</td><td>0</td></tr>"
+        "<tr><td>Не покрыто</td><td>0</td></tr>"
+        "<tr><td>API тест-кейсов</td><td>0</td></tr>"
+        "<tr><td>UI тест-кейсов</td><td>0</td></tr>"
+        "</table>"
+        f"<p><strong>US:</strong> {us_code} | <strong>TC:</strong> {tc_title}</p>"
+        f"<p>Сгенерировано: {_utc_now_iso()}</p>"
     )
 
 
@@ -295,15 +312,28 @@ def _default_preview_html(payload: dict[str, Any]) -> str:
     ac_rows = "".join(f"<li>{item}</li>" for item in payload.get("acceptance_criteria", []))
     api_tests = payload.get("api_tests", [])
     ui_tests = payload.get("ui_tests", [])
-    api_rows = "".join(f"<li>{t}</li>" for t in api_tests) or "<li>No API tests found</li>"
-    ui_rows = "".join(f"<li>{t}</li>" for t in ui_tests) or "<li>No UI tests found</li>"
+    api_rows = "".join(f"<li>{t}</li>" for t in api_tests) or "<li>Нет API тест-кейсов</li>"
+    ui_rows = "".join(f"<li>{t}</li>" for t in ui_tests) or "<li>Нет UI тест-кейсов</li>"
     return (
-        f"<h1>{payload.get('tc_title', 'Coverage Page')}</h1>"
-        f"<p><strong>User Story:</strong> {payload.get('us_code')}</p>"
-        f"<h2>Acceptance Criteria</h2><ul>{ac_rows or '<li>None extracted</li>'}</ul>"
-        f"<h2>API Test Cases</h2><ul>{api_rows}</ul>"
-        f"<h2>UI Test Cases</h2><ul>{ui_rows}</ul>"
-        f"<h2>API Documentation Match</h2><p>{payload.get('api_doc_title') or 'No strong match found'}</p>"
+        "<h2>1. Покрытие критериев приёмки</h2>"
+        "<table>"
+        "<tr><th>Критерий приёмки</th><th>Покрывающие тест-кейсы</th><th>Статус</th></tr>"
+        f"<tr><td>{(ac_rows or '<li>Нет явного списка AC</li>').replace('<li>', '').replace('</li>', '<br/>')}</td><td></td><td>⚠️ Частично</td></tr>"
+        "</table>"
+        "<h2>2. Пробелы в покрытии</h2>"
+        "<ul><li>Требуется ручная проверка соответствия AC и тест-кейсов.</li></ul>"
+        "<h2>3. Итоговая сводка</h2>"
+        "<table>"
+        "<tr><th>Метрика</th><th>Значение</th></tr>"
+        f"<tr><td>Всего критериев приёмки</td><td>{len(payload.get('acceptance_criteria') or [])}</td></tr>"
+        "<tr><td>Покрыто полностью</td><td>0</td></tr>"
+        "<tr><td>Покрыто частично</td><td>0</td></tr>"
+        "<tr><td>Не покрыто</td><td>0</td></tr>"
+        f"<tr><td>API тест-кейсов</td><td>{len(api_tests)}</td></tr>"
+        f"<tr><td>UI тест-кейсов</td><td>{len(ui_tests)}</td></tr>"
+        "</table>"
+        f"<p><strong>API тест-кейсы (список):</strong></p><ul>{api_rows}</ul>"
+        f"<p><strong>UI тест-кейсы (список):</strong></p><ul>{ui_rows}</ul>"
     )
 
 
@@ -327,6 +357,72 @@ def _resolve_story_entry(us_pages: list[dict[str, Any]], us_code: str) -> Option
     return None
 
 
+def _make_confluence_page_url(base_url: str, space_key: str, page_id: str) -> str:
+    return f"{base_url.rstrip('/')}/spaces/{space_key}/pages/{page_id}"
+
+
+def _normalize_us_code(us_code: str) -> str:
+    return re.sub(r"[-\s]+", "", us_code.strip().lower())
+
+
+def _extract_issue_summary(issue: dict[str, Any]) -> str:
+    return str(issue.get("summary") or (issue.get("fields") or {}).get("summary") or "")
+
+
+def _extract_issue_key(issue: dict[str, Any]) -> str:
+    return str(issue.get("key") or "")
+
+
+def _extract_issue_url(issue: dict[str, Any], jira_base_url: str) -> str:
+    direct = str(issue.get("url") or "").strip()
+    if direct:
+        return direct
+    key = _extract_issue_key(issue)
+    return f"{jira_base_url.rstrip('/')}/browse/{key}" if key else ""
+
+
+def _iter_jira_catalog_issues(jira_catalog: Any) -> list[dict[str, Any]]:
+    if isinstance(jira_catalog, list):
+        return jira_catalog
+    if isinstance(jira_catalog, dict) and isinstance(jira_catalog.get("issues"), list):
+        return jira_catalog.get("issues", [])
+    return []
+
+
+def _find_best_jira_issue_for_us(us_code: str, issues: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Legacy-style Jira matcher: exact US token + canonical summary preference."""
+    if not issues:
+        return None
+
+    pattern = re.compile(rf"\b{re.escape(us_code)}\b", re.IGNORECASE)
+    matched = [issue for issue in issues if pattern.search(_extract_issue_summary(issue))]
+    if not matched:
+        normalized = _normalize_us_code(us_code)
+        matched = [
+            issue for issue in issues
+            if _normalize_us_code(_extract_issue_summary(issue)).find(normalized) != -1
+        ]
+    if not matched:
+        return None
+
+    canonical_tail = re.compile(
+        rf"\b{re.escape(us_code)}\b\s*\|\s*[^:]+$",
+        re.IGNORECASE,
+    )
+    filtered: list[dict[str, Any]] = []
+    for issue in matched:
+        summary = _extract_issue_summary(issue)
+        if not canonical_tail.search(summary):
+            continue
+        if re.search(r"\b(automate|document|create|coverage|test\s*cases?)\b", summary, re.IGNORECASE):
+            continue
+        filtered.append(issue)
+
+    pool = filtered if filtered else matched
+    pool.sort(key=lambda issue: len(_extract_issue_summary(issue)))
+    return pool[0]
+
+
 def _build_related_links_html(
     us_record: dict[str, Any],
     jira_links: list[dict[str, str]],
@@ -334,25 +430,60 @@ def _build_related_links_html(
     ui_suite_ids: list[str],
     azure_org_url: str,
     azure_project: str,
+    confluence_base_url: str,
+    confluence_space: str,
 ) -> str:
-    us_link = us_record.get("url") or ""
-    parts = ['<h2 id="related-links">Related Links</h2>', "<ul>"]
+    org_url = str(azure_org_url or "").rstrip("/")
+    project = str(azure_project or "").strip("/")
+    azure_test_plan_url = f"{org_url}/{project}/_testPlans/define" if org_url and project else ""
+
+    us_page_id = str(us_record.get("id") or us_record.get("page_id") or "").strip()
+    us_link = _make_confluence_page_url(confluence_base_url, confluence_space, us_page_id) if us_page_id else str(us_record.get("url") or "")
+    us_code = str(us_record.get("story_code") or _extract_code_from_title(str(us_record.get("title") or "")) or "US")
+
+    us_inline = us_code
     if us_link:
-        parts.append(f'<li><a href="{us_link}">User Story Source</a></li>')
+        us_inline = (
+            f'<a href="{us_link}" data-card-appearance="inline">'
+            f"{us_code}</a>"
+        )
 
-    for issue in jira_links:
-        parts.append(f'<li><a href="{issue.get("url", "")}">{issue.get("key", "Jira Task")}</a></li>')
+    jira_line = "<li>Jira QA задача: не найдена</li>"
+    if jira_links:
+        issue = jira_links[0]
+        issue_key = str(issue.get("key") or "")
+        issue_url = str(issue.get("url") or "")
+        if issue_url:
+            jira_line = (
+                '<li>Jira QA задача: '
+                f'<a href="{issue_url}" data-card-appearance="inline">{issue_key}</a>'
+                "</li>"
+            )
+        elif issue_key:
+            jira_line = f"<li>Jira QA задача: {issue_key}</li>"
 
-    for suite_id in api_suite_ids:
-        suite_url = f"{azure_org_url}/{azure_project}/_testPlans/execute?planId=&suiteId={suite_id}"
-        parts.append(f'<li><a href="{suite_url}">Azure API Suite {suite_id}</a></li>')
+    azure_lines: list[str] = []
+    if azure_test_plan_url:
+        for suite_id in api_suite_ids:
+            azure_url = f"{azure_test_plan_url}?planId={API_PLAN_ID}&suiteId={suite_id}"
+            azure_lines.append(
+                f'<li>Azure Test Suite (API): <a href="{azure_url}">plan {API_PLAN_ID}, suite {suite_id}</a></li>'
+            )
+        for suite_id in ui_suite_ids:
+            azure_url = f"{azure_test_plan_url}?planId={UI_PLAN_ID}&suiteId={suite_id}"
+            azure_lines.append(
+                f'<li>Azure Test Suite (UI): <a href="{azure_url}">plan {UI_PLAN_ID}, suite {suite_id}</a></li>'
+            )
 
-    for suite_id in ui_suite_ids:
-        suite_url = f"{azure_org_url}/{azure_project}/_testPlans/execute?planId=&suiteId={suite_id}"
-        parts.append(f'<li><a href="{suite_url}">Azure UI Suite {suite_id}</a></li>')
-
-    parts.append("</ul>")
-    return "".join(parts)
+    azure_block = "".join(azure_lines)
+    return (
+        "<h2>4. Связанные ссылки</h2>"
+        "<ul>"
+        f"<li>User Story: {us_inline}</li>"
+        f"{jira_line}"
+        f"{azure_block}"
+        "</ul>"
+    )
 
 
 async def _safe_match_api_doc(gemini_client, us_text: str, api_docs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -785,27 +916,46 @@ async def run_update_coverage_pages_workflow(
             )
 
             jira_links: list[dict[str, str]] = []
-            issues = await jira_client.fetch_issues(f'text ~ "{item_us_code}" AND labels = QA')
-            for issue in issues[:5]:
-                key = issue.get("key", "Jira Task")
+            jira_search_jql = (
+                'project = MB '
+                'AND issuetype = "QA task" '
+                'AND summary ~ "US*" '
+                'AND summary ~ "E*" '
+                'ORDER BY created DESC'
+            )
+            issues = await jira_client.fetch_issues(jira_search_jql)
+            best_live_issue = _find_best_jira_issue_for_us(item_us_code, issues)
+
+            if not best_live_issue:
+                targeted_jql = (
+                'project = MB '
+                'AND issuetype = "QA task" '
+                f'AND summary ~ "{item_us_code}" '
+                'ORDER BY created DESC'
+            )
+                issues = await jira_client.fetch_issues(targeted_jql)
+                best_live_issue = _find_best_jira_issue_for_us(item_us_code, issues)
+
+            if best_live_issue:
                 jira_links.append(
                     {
-                        "key": key,
-                        "url": f"{jira_client.base_url}/browse/{key}",
+                        "key": _extract_issue_key(best_live_issue) or "Jira Task",
+                        "url": _extract_issue_url(best_live_issue, jira_client.base_url),
                     }
                 )
-            log("INFO", f"[STEP 5] Jira links resolved for {item_us_code}: {len(jira_links)}")
 
             if not jira_links and jira_catalog:
-                for task in jira_catalog:
-                    title = str(task.get("title") or task.get("summary") or "")
-                    if item_us_code in title:
-                        jira_links.append(
-                            {
-                                "key": str(task.get("key") or "Jira Task"),
-                                "url": str(task.get("url") or ""),
-                            }
-                        )
+                catalog_issues = _iter_jira_catalog_issues(jira_catalog)
+                best_catalog_issue = _find_best_jira_issue_for_us(item_us_code, catalog_issues)
+                if best_catalog_issue:
+                    jira_links.append(
+                        {
+                            "key": _extract_issue_key(best_catalog_issue) or "Jira Task",
+                            "url": _extract_issue_url(best_catalog_issue, jira_client.base_url),
+                        }
+                    )
+
+            log("INFO", f"[STEP 5] Jira links resolved for {item_us_code}: {len(jira_links)}")
 
             generation_payload = {
                 "us_code": item_us_code,
@@ -852,6 +1002,8 @@ async def run_update_coverage_pages_workflow(
                 azure_data.get("ui_suite_ids", []),
                 getattr(azure_client, "org_url", ""),
                 getattr(azure_client, "project", ""),
+                getattr(confluence_client, "base_url", ""),
+                getattr(confluence_client, "space", "MB"),
             )
             generated_html = _ensure_related_links_section(generated_html, related_links_html)
 
