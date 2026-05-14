@@ -142,9 +142,9 @@ async def dashboard(request: Request, db: Session = Depends(get_db)) -> str:
                         <span class="label">Triage Bugs</span>
                         <span class="hint">Analyze defects and identify automation gaps.</span>
                     </a>
-                    <a class="action-btn" href="/ui/orphan-test-cases">
-                        <span class="label">Orphaned Cases</span>
-                        <span class="hint">Find and clean test cases not linked to suites.</span>
+                    <a class="action-btn" href="/ui/csv-fixer">
+                        <span class="label">CSV Fixer</span>
+                        <span class="hint">Fix broken ADO Test Plan CSV files for import.</span>
                     </a>
                 </div>
             </div>

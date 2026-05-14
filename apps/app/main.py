@@ -129,11 +129,12 @@ def create_app() -> FastAPI:
     app.include_router(compositions.router, tags=["compositions"])
 
     # Import and include UI routers
-    from apps.app.ui import dashboard, workflows_ui, runs_ui
+    from apps.app.ui import dashboard, workflows_ui, runs_ui, csv_fixer
 
     app.include_router(dashboard.router, tags=["ui-dashboard"])
     app.include_router(workflows_ui.router, prefix="/ui/workflows", tags=["ui"])
     app.include_router(runs_ui.router, prefix="/ui/runs", tags=["ui"])
+    app.include_router(csv_fixer.router, tags=["ui-csv-fixer"])
 
     # Global error handler
     @app.exception_handler(Exception)
