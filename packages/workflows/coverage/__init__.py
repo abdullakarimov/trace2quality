@@ -223,32 +223,100 @@ def _suite_ids_for_us(ui_suite_mapping: Any, us_code: str, us_id: Optional[str])
     return list(dict.fromkeys(ids))
 
 
+_API_DOC_TITLE_RE = re.compile(r"\bAPI(?:\s+v?\d+(?:\.\d+)*)?\s*$", re.IGNORECASE)
+
+# Cache so we don't search Confluence repeatedly for the same epic folder within a run.
+_epic_tc_parent_cache: dict[str, Optional[str]] = {}
+
+
+def _is_api_doc_title(title: str) -> bool:
+    """Return True when the title looks like an API-documentation page rather than a US spec.
+
+    Pages such as "US-9.1.1 | Базовый счет API" match this because they end with
+    the standalone word "API" (optionally followed by a version like "API v2").
+    Pure user-story spec pages ("US-9.1.1 | Базовый счет") do not.
+    """
+    return bool(_API_DOC_TITLE_RE.search(title))
+
+
+def _epic_number_from_us_code(us_code: str) -> Optional[str]:
+    """Return the top-level epic number from a US code.
+
+    "US-9.1.1" → "9",  "US-12.3" → "12",  "US-9" → "9".
+    """
+    m = re.match(r"US-(\d+)", us_code, flags=re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+async def _find_epic_tc_parent_id(confluence_client, us_code: str, log_fn=None) -> Optional[str]:
+    """Return the Confluence page ID of the epic-level TC folder for *us_code*.
+
+    Looks for a page whose title starts with "E-{n} | TC" (e.g. "E-9 | TC | …").
+    Results are cached per epic number for the lifetime of the current process.
+    """
+    epic_num = _epic_number_from_us_code(us_code)
+    if not epic_num:
+        return None
+
+    cache_key = f"{getattr(confluence_client, 'space', '')}:E-{epic_num}"
+    if cache_key in _epic_tc_parent_cache:
+        return _epic_tc_parent_cache[cache_key]
+
+    # CQL title search — no type filter so both pages AND folders are matched.
+    # Confluence Cloud folders have type="folder" and are excluded when type=page is used.
+    cql = (
+        f'space="{confluence_client.space}" '
+        f'AND (title = "E-{epic_num} | TC" OR title ~ "E-{epic_num} | TC |")'
+    )
+    pages = await confluence_client.search_pages(cql, limit=5)
+    parent_id: Optional[str] = None
+    for page in pages:
+        title = str(page.get("title") or "")
+        # Accept "E-9 | TC" or "E-9 | TC | …" (with any suffix)
+        if re.match(rf"^E-{re.escape(epic_num)}\s*\|\s*TC\b", title, flags=re.IGNORECASE):
+            parent_id = str(page.get("id") or "") or None
+            if log_fn:
+                log_fn("INFO", f"Found epic TC parent for E-{epic_num}: id={parent_id} title='{title}'")
+            break
+
+    _epic_tc_parent_cache[cache_key] = parent_id
+    if not parent_id and log_fn:
+        log_fn("WARNING", f"No epic TC parent page found for E-{epic_num} (US code: {us_code})")
+    return parent_id
+
+
 async def _fetch_provider_us_pages(confluence_client, log_fn=None) -> list[dict[str, Any]]:
     if log_fn:
-        log_fn("INFO", "Searching Confluence for US pages using direct space listing")
-    
-    # Use direct space listing instead of CQL search (more reliable for finding all pages)
-    # Limit to 250 pages with 15-second timeout to prevent hanging on slow Confluence instances
-    pages = await confluence_client.search_pages_by_space(limit=250, timeout=15)
-    out: list[dict[str, Any]] = []
-    page_count = 0
+        log_fn("INFO", "Searching Confluence for US pages using CQL title search")
+
+    # Use CQL to search only for pages whose title contains "US-" instead of listing
+    # all pages in the space. This avoids the batch-count cap and finds every US page
+    # regardless of where it appears in the space's default sort order.
+    cql = f'space="{confluence_client.space}" AND type=page AND title ~ "US-"'
+    pages = await confluence_client.search_pages(cql, limit=500)
+
+    # Deduplicate by US code.  When both an API-doc page ("US-X | … API") and a plain
+    # US-spec page ("US-X | …") share the same code, prefer the spec page so that
+    # tc_title derivation doesn't inherit the "API" suffix.
+    by_code: dict[str, dict[str, Any]] = {}
     for page in pages:
         code = _extract_code_from_title(str(page.get("title") or ""))
-        if code:
-            page_id = str(page.get("id") or "")
-            page_title = page.get("title", "")
-            # Log at INFO level periodically instead of for every page to reduce DB writes
-            page_count += 1
-            if page_count % 10 == 0 and log_fn:
-                log_fn("DEBUG", f"Processing US page {page_count}: code={code}")
-            out.append(
-                {
-                    "id": page_id,
-                    "title": page_title,
-                    "story_code": code,
-                    "url": page.get("url", ""),
-                }
-            )
+        if not code:
+            continue
+        entry = {
+            "id": str(page.get("id") or ""),
+            "title": page.get("title", ""),
+            "story_code": code,
+            "url": page.get("url", ""),
+        }
+        existing = by_code.get(code)
+        if existing is None:
+            by_code[code] = entry
+        elif _is_api_doc_title(existing["title"]) and not _is_api_doc_title(entry["title"]):
+            # Replace an API-doc entry with a proper spec entry
+            by_code[code] = entry
+
+    out = list(by_code.values())
     if log_fn:
         log_fn("INFO", f"Confluence US pages loaded: total={len(out)} pages (scanned {len(pages)} total pages)")
     return out
@@ -273,10 +341,10 @@ async def _fetch_provider_api_docs(confluence_client, log_fn=None) -> list[dict[
 
 
 def _ensure_related_links_section(body_html: str, related_links_html: str) -> str:
+    """Strip any existing section 4 from body_html and append the canonical links block."""
     marker = "<h2>4. Связанные ссылки</h2>"
     if marker in body_html:
-        head = body_html.split(marker)[0].strip()
-        return f"{head}\n{related_links_html}"
+        body_html = body_html.split(marker)[0].strip()
     return f"{body_html.strip()}\n{related_links_html}"
 
 
@@ -459,6 +527,19 @@ def _build_jira_title_hint(us_title: str) -> str:
     return " ".join(words[: min(2, len(words))])
 
 
+def _make_us_code_pattern(us_code: str) -> re.Pattern:
+    """Return a regex that matches the exact US code in a suite name.
+
+    Uses a negative lookahead for a trailing digit so 'US-9.1.1' does not
+    match 'US-9.1.10'.
+    """
+    m = re.match(r"^US[-\s]*(\d+(?:\.\d+)*)$", us_code, flags=re.IGNORECASE)
+    if not m:
+        return re.compile(re.escape(us_code), re.IGNORECASE)
+    numeric = re.escape(m.group(1))
+    return re.compile(rf"\bUS[-\s]*{numeric}(?!\d|\.\d)\b", re.IGNORECASE)
+
+
 def _build_related_links_html(
     us_record: dict[str, Any],
     jira_links: list[dict[str, str]],
@@ -469,6 +550,8 @@ def _build_related_links_html(
     confluence_base_url: str,
     confluence_space: str,
 ) -> str:
+    import html as _html
+
     org_url = str(azure_org_url or "").rstrip("/")
     project = str(azure_project or "").strip("/")
     azure_test_plan_url = f"{org_url}/{project}/_testPlans/define" if org_url and project else ""
@@ -477,11 +560,11 @@ def _build_related_links_html(
     us_link = _make_confluence_page_url(confluence_base_url, confluence_space, us_page_id) if us_page_id else str(us_record.get("url") or "")
     us_code = str(us_record.get("story_code") or _extract_code_from_title(str(us_record.get("title") or "")) or "US")
 
-    us_inline = us_code
+    us_inline = _html.escape(us_code)
     if us_link:
         us_inline = (
-            f'<a href="{us_link}" data-card-appearance="inline">'
-            f"{us_code}</a>"
+            f'<a href="{_html.escape(us_link)}" data-card-appearance="inline">'
+            f"{_html.escape(us_code)}</a>"
         )
 
     jira_line = "<li>Jira Story: не найдена</li>"
@@ -491,24 +574,24 @@ def _build_related_links_html(
         issue_url = str(issue.get("url") or "")
         if issue_url:
             jira_line = (
-                '<li>Jira Story: '
-                f'<a href="{issue_url}" data-card-appearance="inline">{issue_key}</a>'
+                "<li>Jira Story: "
+                f'<a href="{_html.escape(issue_url)}" data-card-appearance="inline">{_html.escape(issue_key)}</a>'
                 "</li>"
             )
         elif issue_key:
-            jira_line = f"<li>Jira Story: {issue_key}</li>"
+            jira_line = f"<li>Jira Story: {_html.escape(issue_key)}</li>"
 
     azure_lines: list[str] = []
     if azure_test_plan_url:
         for suite_id in api_suite_ids:
             azure_url = f"{azure_test_plan_url}?planId={API_PLAN_ID}&suiteId={suite_id}"
             azure_lines.append(
-                f'<li>Azure Test Suite (API): <a href="{azure_url}">plan {API_PLAN_ID}, suite {suite_id}</a></li>'
+                f'<li>Azure Test Suite (API): <a href="{_html.escape(azure_url)}">plan {API_PLAN_ID}, suite {suite_id}</a></li>'
             )
         for suite_id in ui_suite_ids:
             azure_url = f"{azure_test_plan_url}?planId={UI_PLAN_ID}&suiteId={suite_id}"
             azure_lines.append(
-                f'<li>Azure Test Suite (UI): <a href="{azure_url}">plan {UI_PLAN_ID}, suite {suite_id}</a></li>'
+                f'<li>Azure Test Suite (UI): <a href="{_html.escape(azure_url)}">plan {UI_PLAN_ID}, suite {suite_id}</a></li>'
             )
 
     azure_block = "".join(azure_lines)
@@ -608,7 +691,7 @@ async def _collect_azure_tests(
                 continue
             if mapped_suite_ids and suite_id not in mapped_suite_ids:
                 continue
-            if not mapped_suite_ids and us_code not in suite_name:
+            if not mapped_suite_ids and not _make_us_code_pattern(us_code).search(suite_name):
                 continue
 
             if log_fn:
@@ -672,15 +755,29 @@ async def _publish_with_fallback(
     us_page_id: Optional[str],
     generated_html: str,
     regenerate_once: Callable[[], Any],
+    parent_id: Optional[str] = None,
+    related_links_html: str = "",
 ) -> dict[str, Any]:
+    """Publish with escalating HTML sanitization fallbacks.
+
+    *related_links_html* is the canonical section-4 block.  It is re-appended
+    after every sanitization/minimal-fallback step so links are never lost.
+    """
     if tc_page_id and us_page_id and str(tc_page_id) == str(us_page_id):
         raise RuntimeError("Safety abort: tc_page_id equals source US page id")
 
-    if tc_page_id:
-        result = await confluence_client.update_page_content(tc_page_id, generated_html)
-    else:
-        result = await confluence_client.create_page(tc_title, generated_html)
+    def _with_links(html: str) -> str:
+        """Ensure html ends with the related links block."""
+        if not related_links_html:
+            return html
+        return _ensure_related_links_section(html, related_links_html)
 
+    async def _send(html: str) -> dict[str, Any]:
+        if tc_page_id:
+            return await confluence_client.update_page_content(tc_page_id, html)
+        return await confluence_client.create_page(tc_title, html, parent_id=parent_id)
+
+    result = await _send(_with_links(generated_html))
     if result.get("success"):
         return result
 
@@ -688,33 +785,21 @@ async def _publish_with_fallback(
     if "already exists" in error.lower() and not tc_page_id:
         existing = await confluence_client.find_page_by_title(tc_title)
         if existing and existing.get("id"):
-            return await confluence_client.update_page_content(existing["id"], generated_html)
+            return await confluence_client.update_page_content(existing["id"], _with_links(generated_html))
 
     if "unsupported" in error.lower() or "extension" in error.lower():
         regenerated = await regenerate_once()
-        retry = await (
-            confluence_client.update_page_content(tc_page_id, regenerated)
-            if tc_page_id
-            else confluence_client.create_page(tc_title, regenerated)
-        )
+        retry = await _send(_with_links(regenerated))
         if retry.get("success"):
             return retry
 
     sanitized = _sanitize_storage_html(generated_html)
-    retry_sanitized = await (
-        confluence_client.update_page_content(tc_page_id, sanitized)
-        if tc_page_id
-        else confluence_client.create_page(tc_title, sanitized)
-    )
+    retry_sanitized = await _send(_with_links(sanitized))
     if retry_sanitized.get("success"):
         return retry_sanitized
 
     minimal = _minimal_storage_html("unknown", tc_title, "Fallback content due to publish errors")
-    return await (
-        confluence_client.update_page_content(tc_page_id, minimal)
-        if tc_page_id
-        else confluence_client.create_page(tc_title, minimal)
-    )
+    return await _send(_with_links(minimal))
 
 
 async def run_update_coverage_pages_workflow(
@@ -736,6 +821,9 @@ async def run_update_coverage_pages_workflow(
     log_fn: Optional[Callable[[str, str], None]] = None,
 ) -> dict[str, Any]:
     """Generate/update coverage pages with script-equivalent operational controls."""
+
+    # Clear the per-run epic parent cache so stale entries from previous runs don't persist.
+    _epic_tc_parent_cache.clear()
 
     def log(level: str, message: str):
         stamped = f"[{_utc_now_iso()}] [cid={correlation_id}] {message}"
@@ -1070,7 +1158,9 @@ async def run_update_coverage_pages_workflow(
                 getattr(confluence_client, "base_url", ""),
                 getattr(confluence_client, "space", ""),
             )
-            generated_html = _ensure_related_links_section(generated_html, related_links_html)
+            # Strip any section 4 Gemini may have generated; _publish_with_fallback
+            # always re-appends the canonical links block (even on sanitized/minimal fallbacks).
+            generated_html = _ensure_related_links_section(generated_html, "").strip()
 
             if include_debug_artifacts:
                 generated_previews.append(
@@ -1081,7 +1171,7 @@ async def run_update_coverage_pages_workflow(
                         "api_doc_title": api_doc_match.get("api_doc_title"),
                         "api_doc_id": api_doc_match.get("api_doc_id"),
                         "acceptance_criteria": ac_list,
-                        "html": generated_html,
+                        "html": generated_html + "\n" + related_links_html,
                     }
                 )
 
@@ -1091,6 +1181,10 @@ async def run_update_coverage_pages_workflow(
 
             if apply:
                 log("INFO", f"[STEP 7] Publishing Confluence content for {item_us_code}")
+                # Resolve epic TC parent folder for new pages (skipped when updating existing)
+                epic_parent_id: Optional[str] = None
+                if not tc_page_id:
+                    epic_parent_id = await _find_epic_tc_parent_id(confluence_client, item_us_code, log_fn=log)
                 publish_result = await _publish_with_fallback(
                     confluence_client=confluence_client,
                     tc_page_id=tc_page_id,
@@ -1100,6 +1194,8 @@ async def run_update_coverage_pages_workflow(
                     regenerate_once=lambda: gemini_client.generate_confluence_coverage_page(
                         {**generation_payload, "strict_storage": True}
                     ),
+                    parent_id=epic_parent_id,
+                    related_links_html=related_links_html,
                 )
                 if not publish_result.get("success"):
                     raise RuntimeError(

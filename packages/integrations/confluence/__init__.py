@@ -259,20 +259,23 @@ class ConfluenceClient(IntegrationClient):
             logger.error(f"Error updating page {page_id}: {str(e)}")
             return {"success": False, "error": str(e)}
 
-    async def create_page(self, title: str, content: str) -> dict[str, Any]:
-        """Create a new page in Confluence"""
+    async def create_page(self, title: str, content: str, parent_id: Optional[str] = None) -> dict[str, Any]:
+        """Create a new page in Confluence, optionally as a child of parent_id."""
         try:
             async with httpx.AsyncClient() as client:
                 auth = (self.email, self.api_token)
+                body: dict[str, Any] = {
+                    "type": "page",
+                    "title": title,
+                    "space": {"key": self.space},
+                    "body": {"storage": {"value": content, "representation": "storage"}},
+                }
+                if parent_id:
+                    body["ancestors"] = [{"id": parent_id}]
                 response = await client.post(
                     f"{self.base_url}/rest/api/content",
                     auth=auth,
-                    json={
-                        "type": "page",
-                        "title": title,
-                        "space": {"key": self.space},
-                        "body": {"storage": {"value": content, "representation": "storage"}},
-                    },
+                    json=body,
                     timeout=30,
                 )
                 
