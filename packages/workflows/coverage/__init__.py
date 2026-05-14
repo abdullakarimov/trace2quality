@@ -614,7 +614,7 @@ async def _safe_match_api_doc(gemini_client, us_text: str, api_docs: list[dict[s
         result = await gemini_client.choose_best_match(us_text, candidates)
         title = result.get("title")
     except Exception:
-        title = candidates[0]
+        title = None
 
     matched = next((d for d in api_docs if d.get("title") == title), {})
     return {
@@ -981,6 +981,36 @@ async def run_update_coverage_pages_workflow(
         
         try:
             us_record = _resolve_story_entry(epic_us_pages, item_us_code)
+            if not us_record:
+                # The broad CQL fetch (limit=500) may have missed this page.
+                # Try a targeted lookup by exact US code in the title.
+                log("WARNING", f"US page not in prefetched list; trying direct CQL lookup for {item_us_code}")
+                fallback_cql = (
+                    f'space="{confluence_client.space}" AND type=page '
+                    f'AND title = "{item_us_code}"'
+                )
+                fallback_pages = await confluence_client.search_pages(fallback_cql, limit=5)
+                if not fallback_pages:
+                    # Also try contains search in case the title has extra text
+                    fallback_cql2 = (
+                        f'space="{confluence_client.space}" AND type=page '
+                        f'AND title ~ "{item_us_code} |"'
+                    )
+                    fallback_pages = await confluence_client.search_pages(fallback_cql2, limit=5)
+                # Filter to pages whose extracted code exactly matches
+                for fp in fallback_pages:
+                    fp_code = _extract_code_from_title(str(fp.get("title") or ""))
+                    if fp_code == item_us_code and not _is_api_doc_title(str(fp.get("title") or "")):
+                        us_record = {
+                            "id": str(fp.get("id") or ""),
+                            "title": fp.get("title", ""),
+                            "story_code": item_us_code,
+                            "url": fp.get("url", ""),
+                        }
+                        log("INFO", f"Found via direct lookup: id={us_record['id']} title={us_record['title']}")
+                        # Cache it so subsequent lookups for the same code work
+                        epic_us_pages.append(us_record)
+                        break
             if not us_record:
                 raise RuntimeError(f"User story not found: {item_us_code}")
             log("INFO", f"Resolved user story record for {item_us_code}")

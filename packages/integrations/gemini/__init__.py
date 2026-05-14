@@ -303,6 +303,8 @@ Return ONLY valid JSON."""
             return {"title": candidates[0], "reason": "no_api_key"}
 
         prompt = f"""Given the user story text, select the single best matching API document title.
+Only match if the API document is clearly relevant to the user story.
+If none of the candidates is a good match, return null for title.
 
 USER STORY:
 {query_text}
@@ -311,7 +313,7 @@ CANDIDATE TITLES:
 {json.dumps(candidates, ensure_ascii=True)}
 
 Return ONLY valid JSON object with keys:
-- title: one exact title from the candidate list
+- title: one exact title from the candidate list, or null if no candidate is relevant
 - reason: short reason
 """
         try:
@@ -325,10 +327,12 @@ Return ONLY valid JSON object with keys:
                 title = parsed.get("title")
                 if title in candidates:
                     return {"title": title, "reason": parsed.get("reason", "")}
+                # title is null or not in candidates → no match
+                return {"title": None, "reason": parsed.get("reason", "no_match")}
         except Exception as e:
-            logger.warning(f"Best match prompt failed, falling back to first candidate: {str(e)}")
+            logger.warning(f"Best match prompt failed: {str(e)}")
 
-        return {"title": candidates[0], "reason": "fallback_first_candidate"}
+        return {"title": None, "reason": "fallback_no_match"}
 
     async def generate_confluence_coverage_page(self, payload: dict[str, Any]) -> str:
         """Generate Confluence storage HTML for coverage page content."""
