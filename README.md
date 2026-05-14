@@ -8,8 +8,9 @@ t2q orchestrates enterprise QA workflows through a web UI and REST API:
 
 - **Catalog Management** — Fetch and index specs, user stories, and docs from Confluence and Jira
 - **Test Generation** — AI-powered (Gemini) generation of API and UI test cases
-- **Coverage Tracking** — Link tests to requirements, update coverage metrics in Confluence
-- **Bug Triage** — Classify defects and surface automation gaps
+- **Coverage Tracking** — Link tests to requirements, fetch full Azure DevOps test steps, update coverage metrics in Confluence
+- **Bug Triage** — AI-powered Jira bug assessment with dry-run preview and one-click apply (transition, comment, priority, custom fields)
+- **CSV Fixer** — Fix broken Azure DevOps Test Plan CSV files for import (browser-based, no ADO connection required)
 - **Scheduling & Webhooks** — Schedule recurring workflows or trigger them via GitHub/Jira/Confluence events
 - **Workflow Composition** — Chain multiple workflows into a single orchestrated execution
 
@@ -234,7 +235,7 @@ APP_SECRET_KEY=<another strong random string>
 1. Open http://localhost:8000
 2. Navigate to **Workflows** and trigger a run
 3. Monitor progress under **Runs**
-4. Use **Dashboard → Orphaned Test Cases** to inspect and clean Azure DevOps orphan test cases
+4. Use **Dashboard → CSV Fixer** to repair malformed Azure DevOps Test Plan CSV files before import
 
 ### Via API
 
@@ -244,12 +245,105 @@ curl -X POST http://localhost:8000/api/workflows/fetch_confluence/runs \
   -H "Content-Type: application/json" \
   -d '{"parameters": {"space": "QA", "labels": ["requirements"]}}'
 
+# Triage bugs (dry run — no Jira changes)
+curl -X POST http://localhost:8000/api/workflows/triage-bugs/runs \
+  -H "Content-Type: application/json" \
+  -d '{"jql": "project = MYPROJ AND issuetype = Bug AND status = Open", "max_results": 50, "apply": false}'
+
+# Apply triage results to all real bugs from a run
+curl -X POST http://localhost:8000/api/workflows/triage-bugs/apply-issues \
+  -H "Content-Type: application/json" \
+  -d '{"run_id": "<run_id>", "issue_keys": null}'
+
+# Apply triage results to a single issue
+curl -X POST http://localhost:8000/api/workflows/triage-bugs/apply-issues \
+  -H "Content-Type: application/json" \
+  -d '{"run_id": "<run_id>", "issue_keys": ["MYPROJ-123"]}'
+
 # Check run status
 curl http://localhost:8000/api/runs/{run_id}
 
 # List recent runs
 curl http://localhost:8000/api/runs
 ```
+
+---
+
+## Triage Bug Tickets Workflow
+
+The triage workflow fetches Jira bugs via JQL, locates the associated Confluence user-story specification page for each issue, and uses Google Gemini to assess each bug against the spec.
+
+**UI:** `http://localhost:8000/ui/workflows/triage_bugs/run`
+
+### How it works
+
+1. **Fetch bugs** — Query Jira using any JQL expression (e.g. `project = PROJ AND issuetype = Bug AND status = Open`).
+2. **Find spec page** — For each bug, the workflow extracts the linked user story identifier (e.g. `US-11.1.2`) and searches Confluence using a two-strategy approach:
+   - Quoted-phrase CQL (`title ~ "\"US-11.1.2\""`) for exact segment matching.
+   - Broad fallback with Python regex filtering when the exact query returns nothing.
+   - When multiple pages match, the shortest non-API-suffixed title is preferred as the most generic spec page.
+3. **AI assessment** — Gemini reads the spec and the bug description and returns:
+   - `is_real_bug` — whether the bug is a genuine defect given the spec.
+   - `severity` — `Critical` / `Major` / `Minor`.
+   - `impact` — `Extensive / Widespread` / `Significant / Large` / `Moderate / Limited` / `Minor / Localized`.
+   - `priority` — `Highest` / `High` / `Medium` / `Low` / `Lowest`.
+   - `reasoning` — free-text explanation.
+4. **Dry-run preview** — Results are shown in a table. No Jira changes are made until you explicitly apply.
+5. **Apply** — After reviewing the dry-run table, apply changes issue-by-issue using the per-row **Apply** button, or apply all real bugs at once with **Apply All**. Each apply call:
+   - Transitions the issue to the configured target status.
+   - Sets `priority`, `severity` (custom field), and `impact` (custom field).
+   - Adds a triage comment with the full Gemini reasoning.
+
+### Parameters
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| JQL | Yes | Jira Query Language filter for bugs to triage |
+| Max Results | No | Cap on number of issues fetched (default: 50) |
+| Apply | No | `true` to apply changes immediately; `false` (default) for dry-run |
+| Target Status | No | Jira status to transition issues to after triage (e.g. `In Progress`) |
+| Severity Field ID | No | Jira custom field ID for severity (e.g. `customfield_10200`) |
+| Impact Field ID | No | Jira custom field ID for impact (e.g. `customfield_10201`) |
+| Batch Delay (s) | No | Seconds to wait between Gemini calls to stay within rate limits (default: 10) |
+
+---
+
+## CSV Fixer
+
+The CSV Fixer tool repairs Azure DevOps Test Plan CSV files that fail to import due to formatting issues. It runs entirely in the browser — no ADO connection is needed.
+
+**Access:** Dashboard → CSV Fixer, or navigate to `http://localhost:8000/ui/csv-fixer` directly.
+
+**What it fixes:**
+
+- Legacy 9-column CSVs → 10-column Azure DevOps schema (inserts empty `Priority` column)
+- Test Case rows with embedded step data → splits into a TC header row + step row
+- Step rows that carry `Area Path` / `Assigned To` / `State` instead of the parent TC row — borrows them up
+- Tab-collapsed metadata cells where multiple fields were merged into one
+- Missing `Priority` / `Area Path` / `Assigned To` / `State` on test case rows — carry-forward from last seen values
+- Existing `ID` values — stripped so imported items are created fresh
+- Embedded newlines inside cell values — replaced with `\n` or a space (configurable)
+- Wrong column count — maps to the expected 10-column shape
+- Blank/empty separator rows — dropped
+
+**Parameters:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| CSV Files | Yes | One or more `.csv` files to fix |
+| Assigned To | No | Default assignee used when rows have no assignee (e.g. `Doe John <john.doe@corp.com>`) |
+| Embedded Newlines | No | How to handle newlines inside cells: `\n` (default), space, or keep as-is |
+
+**Output:** Single file → `<name>_fixed.csv` download. Multiple files → `fixed_csvs.zip` archive.
+
+---
+
+## Coverage Workflow — Azure DevOps Notes
+
+When fetching test cases from Azure DevOps, the coverage workflow:
+
+- Retrieves **full work item details** for each test case, including the `Microsoft.VSTS.TCM.Steps` XML field, and parses it into structured `{action, expected}` step pairs (HTML tags are stripped).
+- Classifies test suites as **API** or **UI** by comparing the **Test Plan ID** numerically — not by suite name. Adjust `API_PLAN_ID` in `packages/workflows/coverage/__init__.py` to match your project's plan IDs.
 
 ---
 
