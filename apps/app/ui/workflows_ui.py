@@ -426,11 +426,15 @@ def _render_triage_bugs_page(
             </div>
             <pre id="liveLogs">Loading logs...</pre>
             <h4>Per-Issue Results</h4>
+            <div id="bulkApplyBar" style="display:none; margin-bottom:8px;">
+                <button id="btnApplyAll" class="btn-apply-all" onclick="applyAll()">✅ Apply All Real Bugs to Jira</button>
+                <span id="bulkApplyStatus" style="margin-left:12px; font-size:13px;"></span>
+            </div>
             <table>
                 <thead>
-                    <tr><th>Key</th><th>Summary</th><th>Real Bug</th><th>Severity</th><th>Impact</th><th>Priority</th><th>Outcome</th><th>Reasoning</th></tr>
+                    <tr><th>Key</th><th>Summary</th><th>Real Bug</th><th>Severity</th><th>Impact</th><th>Priority</th><th>Outcome</th><th>Reasoning</th><th id="applyColHeader"></th></tr>
                 </thead>
-                <tbody id="resultsTableBody"><tr><td colspan="8">Waiting for results...</td></tr></tbody>
+                <tbody id="resultsTableBody"><tr><td colspan="9">Waiting for results...</td></tr></tbody>
             </table>
             <h4>Artifacts</h4>
             <ul id="artifactLinks"><li>Waiting for artifacts...</li></ul>
@@ -438,6 +442,9 @@ def _render_triage_bugs_page(
         <script>
             const runId = "{run_id}";
             let done = false;
+            let isDryRun = true;
+            let runFinished = false;
+            let lastRows = [];
             const monitorStartedAt = Date.now();
             let lastLogTimestamp = null;
             const POLL_INTERVAL_MS = 1000;
@@ -475,9 +482,11 @@ def _render_triage_bugs_page(
 
                 const dryRunBadge = document.getElementById("dryRunBadge");
                 if (run.dry_run) {{
-                    dryRunBadge.textContent = "DRY-RUN (preview only — no Jira changes)";
+                    isDryRun = true;
+                    dryRunBadge.textContent = "DRY-RUN (preview only \u2014 no Jira changes)";
                     dryRunBadge.className = "badge dry";
                 }} else {{
+                    isDryRun = false;
                     dryRunBadge.textContent = "APPLY MODE (writes enabled — Jira will be updated)";
                     dryRunBadge.className = "badge apply";
                 }}
@@ -517,9 +526,14 @@ def _render_triage_bugs_page(
                     }}
                 }}
 
+                const isTerminal = ["succeeded", "failed", "canceled"].includes(run.status);
+                if (isTerminal) {{
+                    runFinished = true;
+                }}
+
                 const shouldPollArtifacts =
                     (tickCount % ARTIFACT_POLL_EVERY_TICKS === 0) ||
-                    ["succeeded", "failed", "canceled"].includes(run.status);
+                    isTerminal;
 
                 if (shouldPollArtifacts) {{
                     const artifactResp = await fetch(`/api/artifacts/run/${{runId}}`);
@@ -553,15 +567,22 @@ def _render_triage_bugs_page(
                             const resultResp = await fetch(perIssueArtifact.download_url);
                             if (resultResp.ok) {{
                                 const rows = await resultResp.json();
+                                lastRows = rows;
                                 const body = document.getElementById("resultsTableBody");
                                 body.innerHTML = "";
+                                const showApplyCol = isDryRun && runFinished;
+                                document.getElementById("applyColHeader").textContent = showApplyCol ? "Apply" : "";
                                 for (const row of rows) {{
                                     const tr = document.createElement("tr");
+                                    tr.id = `row-${{row.key}}`;
                                     tr.className = outcomeClass(row.outcome);
                                     const isReal = row.is_real_bug === null ? "-" : row.is_real_bug ? "✅ Yes" : "❌ No";
                                     const sev = row.severity || "-";
                                     const imp = row.impact || "-";
                                     const pri = row.priority || "-";
+                                    const applyCell = (showApplyCol && row.is_real_bug)
+                                        ? `<td><button class="btn-apply-row" onclick="applyOne('${{row.key}}', this)">Apply</button></td>`
+                                        : `<td></td>`;
                                     tr.innerHTML = `
                                         <td><a href="/ui/runs" target="_blank">${{row.key || ""}}</a></td>
                                         <td>${{row.summary || ""}}</td>
@@ -571,17 +592,73 @@ def _render_triage_bugs_page(
                                         <td>${{pri}}</td>
                                         <td><span class="outcome-badge ${{row.outcome || ""}}">${{row.outcome || ""}}</span></td>
                                         <td>${{row.reasoning || row.reason || ""}}</td>
+                                        ${{applyCell}}
                                     `;
                                     body.appendChild(tr);
+                                }}
+                                if (showApplyCol && rows.some(r => r.is_real_bug)) {{
+                                    document.getElementById("bulkApplyBar").style.display = "";
                                 }}
                             }}
                         }}
                     }}
                 }}
 
-                if (["succeeded", "failed", "canceled"].includes(run.status)) {{
+                if (isTerminal) {{
                     done = true;
                 }}
+            }}
+
+            async function _callApply(issueKeys) {{
+                const statusEl = document.getElementById("bulkApplyStatus");
+                const resp = await fetch("/api/workflows/triage-bugs/apply-issues", {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify({{ run_id: runId, issue_keys: issueKeys }}),
+                }});
+                if (!resp.ok) {{
+                    const err = await resp.text();
+                    statusEl.textContent = `Error: ${{err}}`;
+                    return null;
+                }}
+                return await resp.json();
+            }}
+
+            async function applyOne(issueKey, btn) {{
+                if (!confirm(`Apply triage to ${{issueKey}} in Jira?`)) return;
+                btn.disabled = true;
+                btn.textContent = "...";
+                const result = await _callApply([issueKey]);
+                if (!result) {{ btn.textContent = "Error"; return; }}
+                if (result.applied && result.applied.includes(issueKey)) {{
+                    btn.textContent = "\u2705 Applied";
+                    btn.style.background = "#198754";
+                }} else if (result.errors && result.errors.length) {{
+                    btn.textContent = "\u274c Failed";
+                    btn.title = result.errors[0]?.error || "";
+                    btn.style.background = "#dc3545";
+                }}
+            }}
+
+            async function applyAll() {{
+                const realBugKeys = lastRows.filter(r => r.is_real_bug).map(r => r.key);
+                if (!realBugKeys.length) return;
+                if (!confirm(`Apply triage to ${{realBugKeys.length}} real bug(s) in Jira? This will update severity, impact, priority and transition status.`)) return;
+                const statusEl = document.getElementById("bulkApplyStatus");
+                const allBtn = document.getElementById("btnApplyAll");
+                allBtn.disabled = true;
+                statusEl.textContent = "Applying...";
+                const result = await _callApply(null);
+                if (!result) {{ statusEl.textContent = "Request failed."; allBtn.disabled = false; return; }}
+                statusEl.textContent = `\u2705 Applied ${{result.applied_count}} | \u274c Errors: ${{result.error_count}}`;
+                document.querySelectorAll(".btn-apply-row").forEach(b => {{
+                    const key = b.closest("tr")?.id?.replace("row-", "");
+                    if (result.applied && result.applied.includes(key)) {{
+                        b.textContent = "\u2705 Applied"; b.disabled = true; b.style.background = "#198754";
+                    }} else if (result.errors && result.errors.some(e => e.key === key)) {{
+                        b.textContent = "\u274c Failed"; b.disabled = true; b.style.background = "#dc3545";
+                    }}
+                }});
             }}
 
             async function tick() {{
@@ -643,6 +720,12 @@ def _render_triage_bugs_page(
             .outcome-badge.skipped, .outcome-badge.not_real_bug {{ background: #e2e3e5; color: #41464b; }}
             h4 {{ margin: 16px 0 6px 0; color: #333; }}
             .hint {{ font-size: 12px; color: #666; margin-top: 4px; }}
+            .btn-apply-row {{ background: #0066cc; color: white; border: none; border-radius: 4px; padding: 3px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }}
+            .btn-apply-row:hover {{ background: #0052a3; }}
+            .btn-apply-row:disabled {{ opacity: 0.7; cursor: default; }}
+            .btn-apply-all {{ background: #198754; color: white; border: none; border-radius: 4px; padding: 8px 16px; font-size: 13px; cursor: pointer; font-weight: 600; }}
+            .btn-apply-all:hover {{ background: #157347; }}
+            .btn-apply-all:disabled {{ opacity: 0.7; cursor: default; }}
         </style>
     </head>
     <body>

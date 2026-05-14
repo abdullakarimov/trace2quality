@@ -1,21 +1,29 @@
 """Workflow API endpoints"""
 
+import asyncio
+import json
+import os
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from apps.app.database import WorkflowRunModel, get_session_factory
 from apps.app.config import get_settings
-from apps.app.workflows import enqueue_workflow
+from apps.app.database import ArtifactModel, WorkflowRunModel, get_session_factory
+from apps.app.workflows import _resolve_integration_config, enqueue_workflow
 from packages.common import (
-    UpdateCoverageRunRequest,
+    IntegrationType,
     TriageBugTicketsRunRequest,
+    UpdateCoverageRunRequest,
     WorkflowRunCreate,
     WorkflowType,
     get_logger,
 )
+from packages.integrations import integration_registry
+from packages.workflows import triage as triage_workflow
 
 logger = get_logger(__name__)
 
@@ -183,4 +191,125 @@ async def create_triage_bugs_run(
         "queue": queue_info.get("queue"),
         "task_id": queue_info.get("task_id"),
         "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+# ── Selective apply for dry-run triage results ────────────────────────────────
+
+class _ApplyIssuesRequest(BaseModel):
+    run_id: str
+    issue_keys: list[str] | None = None  # None / empty = apply all real-bug rows
+
+
+@router.post("/triage-bugs/apply-issues")
+async def apply_triage_issues(
+    payload: _ApplyIssuesRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Apply triage results (severity/impact/priority/transition/comment) to specific Jira issues
+    from an existing dry-run.  If ``issue_keys`` is omitted every row where
+    ``is_real_bug=true`` is applied.
+    """
+    # ── 1. Validate the source run ────────────────────────────────────────────
+    run = db.query(WorkflowRunModel).filter(WorkflowRunModel.id == payload.run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run not found: {payload.run_id}")
+    if run.workflow_key != "triage_bugs":
+        raise HTTPException(status_code=400, detail="Run is not a triage_bugs run")
+
+    # ── 2. Load per_issue_results artifact ────────────────────────────────────
+    artifact = (
+        db.query(ArtifactModel)
+        .filter(ArtifactModel.run_id == payload.run_id, ArtifactModel.filename == "per_issue_results.json")
+        .first()
+    )
+    if not artifact:
+        raise HTTPException(status_code=404, detail="per_issue_results.json artifact not found for this run")
+
+    settings = get_settings()
+    artifact_path = Path(settings.artifact_storage_path) / artifact.storage_path
+    if not artifact_path.exists():
+        raise HTTPException(status_code=404, detail="Artifact file missing from storage")
+
+    per_issue_results: list[dict] = json.loads(artifact_path.read_text(encoding="utf-8"))
+
+    # ── 3. Filter to requested issues ─────────────────────────────────────────
+    requested_keys: set[str] = set(payload.issue_keys or [])
+    rows_to_apply = [
+        row for row in per_issue_results
+        if row.get("is_real_bug")
+        and (not requested_keys or str(row.get("key")) in requested_keys)
+    ]
+
+    if not rows_to_apply:
+        return {"applied": [], "skipped": [], "errors": [], "message": "No matching real-bug rows to apply"}
+
+    # ── 4. Recover workflow parameters from the source run ────────────────────
+    params: dict = (
+        run.parameters if isinstance(run.parameters, dict)
+        else json.loads(run.parameters or "{}")
+    )
+    severity_field_id = str(params.get("severity_field_id") or triage_workflow.DEFAULT_SEVERITY_FIELD_ID)
+    impact_field_id = str(params.get("impact_field_id") or triage_workflow.DEFAULT_IMPACT_FIELD_ID)
+    target_status = str(params.get("target_status") or triage_workflow.DEFAULT_TARGET_STATUS)
+
+    # ── 5. Build Jira client ───────────────────────────────────────────────────
+    jira_client = integration_registry.get_client(
+        IntegrationType.JIRA, _resolve_integration_config(db, IntegrationType.JIRA)
+    )
+
+    # ── 6. Apply each issue ───────────────────────────────────────────────────
+    applied: list[str] = []
+    skipped: list[str] = []
+    errors: list[dict] = []
+
+    async def _apply_one(row: dict) -> None:
+        key = str(row.get("key") or "")
+        severity = str(row.get("severity") or "Major")
+        impact = str(row.get("impact") or "Moderate / Limited")
+        priority = str(row.get("priority") or "Medium")
+        reasoning = str(row.get("reasoning") or "")
+
+        try:
+            await jira_client.update_issue(
+                key,
+                {
+                    "fields": {
+                        severity_field_id: {"value": severity},
+                        impact_field_id: {"value": impact},
+                        "priority": {"name": priority},
+                    }
+                },
+            )
+            await jira_client.transition_issue(key, target_status)
+            comment_text = (
+                f"Triaged by automated system:\n"
+                f"- Severity: {severity}\n"
+                f"- Impact: {impact}\n"
+                f"- Priority: {priority}\n"
+                f"- Reason: {reasoning}"
+            )
+            await jira_client.add_comment(key, comment_text)
+            applied.append(key)
+        except Exception as exc:
+            errors.append({"key": key, "error": str(exc)})
+
+    try:
+        await asyncio.gather(*[_apply_one(row) for row in rows_to_apply])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Apply failed: {exc}")
+
+    not_real = [
+        str(row.get("key")) for row in per_issue_results
+        if not row.get("is_real_bug") and (not requested_keys or str(row.get("key")) in requested_keys)
+    ]
+    skipped.extend(not_real)
+
+    return {
+        "applied": applied,
+        "skipped": skipped,
+        "errors": errors,
+        "applied_count": len(applied),
+        "error_count": len(errors),
     }

@@ -50,27 +50,60 @@ async def _find_us_confluence_page(
     """Search Confluence for a page whose title contains 'US-{us_number}' exactly.
 
     Returns the page ID if found, else None.
+
+    Strategy (most to least precise):
+    1. Quoted-phrase CQL: title ~ '"US-{us_number}"' — avoids Lucene tokenisation splitting
+       dots/hyphens, so '11.1.2' is matched as a single phrase.
+    2. Broad CQL on the major part (e.g. 'US-11') with Python-side regex filtering —
+       handles cases where the Confluence analyser still can't match the dotted phrase.
     """
-    cql = f'type=page AND title ~ "US-{us_number}"'
-    if log_fn:
-        log_fn("DEBUG", f"Searching Confluence for US-{us_number}: CQL={cql}")
+    pattern = re.compile(rf"\bUS-{re.escape(us_number)}\b", re.IGNORECASE)
+    space_filter = (
+        f' AND space = "{confluence_client.space}"' if getattr(confluence_client, "space", None) else ""
+    )
 
-    try:
-        pages = await confluence_client.search_pages(cql, limit=10)
-    except Exception as exc:
+    async def _search_and_collect(cql: str) -> list[dict]:
+        """Run CQL and return all pages whose title matches the pattern."""
         if log_fn:
-            log_fn("WARNING", f"Confluence search failed for US-{us_number}: {exc}")
-        return None
+            log_fn("DEBUG", f"Searching Confluence for US-{us_number}: CQL={cql}")
+        try:
+            pages = await confluence_client.search_pages(cql, limit=50)
+        except Exception as exc:
+            if log_fn:
+                log_fn("WARNING", f"Confluence search failed ({cql!r}): {exc}")
+            return []
+        return [p for p in pages if pattern.search(str(p.get("title") or ""))]
 
-    for page in pages:
-        title = str(page.get("title") or "")
-        # Require an exact token match to avoid matching e.g. 'US-1.1' when looking for 'US-1.10'
-        if re.search(rf"\bUS-{re.escape(us_number)}\b", title, re.IGNORECASE):
-            page_id = str(page.get("id") or "")
-            if page_id:
-                if log_fn:
-                    log_fn("DEBUG", f"Found Confluence page id={page_id} title={title!r}")
-                return page_id
+    def _best_match(pages: list[dict]) -> Optional[str]:
+        """From multiple matching pages prefer the main spec (not API sub-pages)."""
+        if not pages:
+            return None
+        # Prefer pages that don't have ' API' immediately after the US number
+        api_pat = re.compile(rf"US-{re.escape(us_number)}\s+API", re.IGNORECASE)
+        preferred = [p for p in pages if not api_pat.search(str(p.get("title") or ""))]
+        candidates = preferred if preferred else pages
+        # Among candidates pick shortest title — most likely the canonical spec page
+        best = min(candidates, key=lambda p: len(str(p.get("title") or "")))
+        page_id = str(best.get("id") or "")
+        if log_fn:
+            log_fn("DEBUG", f"Selected Confluence page id={page_id} title={best.get('title')!r} (from {len(pages)} match(es))")
+        return page_id or None
+
+    # Strategy 1: quoted-phrase CQL (exact phrase, immune to tokenisation)
+    quoted_us = f"US-{us_number}".replace('"', '\\"')
+    cql1 = f'type=page AND title ~ "\\"{quoted_us}\\""' + space_filter
+    matches = await _search_and_collect(cql1)
+    result = _best_match(matches)
+    if result:
+        return result
+
+    # Strategy 2: broad search on the major segment + Python-side exact filter
+    major = us_number.split(".")[0]
+    cql2 = f'type=page AND title ~ "US-{major}"' + space_filter
+    matches = await _search_and_collect(cql2)
+    result = _best_match(matches)
+    if result:
+        return result
 
     if log_fn:
         log_fn("WARNING", f"No Confluence page found for US-{us_number}")
