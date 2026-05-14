@@ -20,6 +20,14 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
+HIDDEN_WEBAPP_WORKFLOW_KEYS = {
+    "fetch_catalog",
+    "generate_api_tests",
+    "generate_ui_tests",
+    "associate_automation",
+    "generate_report",
+}
+
 
 def get_db(request: Request) -> Session:
     """Get database session"""
@@ -37,6 +45,8 @@ async def list_workflows() -> dict:
     """List available workflows"""
     workflows = []
     for workflow in WorkflowType:
+        if workflow.value in HIDDEN_WEBAPP_WORKFLOW_KEYS:
+            continue
         workflows.append({
             "key": workflow.value,
             "name": workflow.value.replace("_", " ").title(),

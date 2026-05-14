@@ -17,6 +17,14 @@ from packages.common import WorkflowType
 
 router = APIRouter()
 
+HIDDEN_WEBAPP_WORKFLOW_KEYS = {
+    "fetch_catalog",
+    "generate_api_tests",
+    "generate_ui_tests",
+    "associate_automation",
+    "generate_report",
+}
+
 
 def get_db(request: Request) -> Session:
     """Get database session."""
@@ -118,7 +126,7 @@ def _render_update_coverage_page(
                 }}
 
                 // Confluence cloud page URL from page id and configured space.
-                const href = `${{confluenceBaseUrl}}/wiki/spaces/${{encodeURIComponent(confluenceSpace)}}/pages/${{encodeURIComponent(raw)}}`;
+                const href = `${{confluenceBaseUrl}}/spaces/${{encodeURIComponent(confluenceSpace)}}/pages/${{encodeURIComponent(raw)}}`;
                 return `<a href="${{href}}" target="_blank" rel="noopener noreferrer">${{raw}}</a>`;
             }}
 
@@ -297,8 +305,6 @@ def _render_update_coverage_page(
                 <li><a href="/ui">Dashboard</a></li>
                 <li><a href="/ui/workflows">Workflows</a></li>
                 <li><a href="/ui/runs">Runs</a></li>
-                <li><a href="/ui/integrations">Integrations</a></li>
-                <li><a href="/ui/data">Data Explorer</a></li>
             </ul>
         </nav>
 
@@ -377,6 +383,8 @@ async def workflows_page(request: Request) -> str:
     workflow_rows = ""
 
     for workflow in WorkflowType:
+        if workflow.value in HIDDEN_WEBAPP_WORKFLOW_KEYS:
+            continue
         workflow_rows += f"""
         <tr>
             <td>{workflow.value}</td>
@@ -412,8 +420,6 @@ async def workflows_page(request: Request) -> str:
                 <li><a href="/ui">Dashboard</a></li>
                 <li><a href="/ui/workflows">Workflows</a></li>
                 <li><a href="/ui/runs">Runs</a></li>
-                <li><a href="/ui/integrations">Integrations</a></li>
-                <li><a href="/ui/data">Data Explorer</a></li>
             </ul>
         </nav>
 
@@ -446,6 +452,9 @@ async def run_workflow_page(request: Request, workflow_key: str) -> str:
     try:
         WorkflowType(workflow_key)
     except ValueError:
+        raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_key}")
+
+    if workflow_key in HIDDEN_WEBAPP_WORKFLOW_KEYS:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_key}")
 
     if workflow_key == "update_coverage":
@@ -483,8 +492,6 @@ async def run_workflow_page(request: Request, workflow_key: str) -> str:
                 <li><a href="/ui">Dashboard</a></li>
                 <li><a href="/ui/workflows">Workflows</a></li>
                 <li><a href="/ui/runs">Runs</a></li>
-                <li><a href="/ui/integrations">Integrations</a></li>
-                <li><a href="/ui/data">Data Explorer</a></li>
             </ul>
         </nav>
 

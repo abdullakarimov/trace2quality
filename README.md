@@ -106,7 +106,7 @@ docker-compose down
 
 ## Getting API Tokens
 
-Trace2Quality requires one token per integration you want to use. Configure them in `.env` or via **Settings → Integrations** in the UI.
+Trace2Quality requires one token per integration you want to use. Configure them in `.env`.
 
 ### Azure DevOps — Personal Access Token (PAT)
 
@@ -232,11 +232,9 @@ APP_SECRET_KEY=<another strong random string>
 ### Via Web UI
 
 1. Open http://localhost:8000
-2. Go to **Settings → Integrations** and configure your tokens
-3. Click **Test Connection** to validate each integration
-4. Navigate to **Workflows** and trigger a run
-5. Monitor progress under **Runs**
-6. Download outputs from **Data Explorer**
+2. Navigate to **Workflows** and trigger a run
+3. Monitor progress under **Runs**
+4. Use **Dashboard → Orphaned Test Cases** to inspect and clean Azure DevOps orphan test cases
 
 ### Via API
 
