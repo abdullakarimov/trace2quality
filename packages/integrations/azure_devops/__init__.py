@@ -1,5 +1,7 @@
 """Azure DevOps integration client"""
 
+import re
+import xml.etree.ElementTree as ET
 from typing import Any, Optional
 
 import httpx
@@ -461,6 +463,78 @@ class AzureDevOpsClient(IntegrationClient):
                             linked_ids.add(str(case_id))
 
         return linked_ids
+
+    @staticmethod
+    def _parse_steps_xml(steps_xml: str) -> list[dict[str, str]]:
+        """Parse the Microsoft.VSTS.TCM.Steps XML field into a list of {action, expected} dicts."""
+        if not steps_xml:
+            return []
+        try:
+            root = ET.fromstring(steps_xml)
+        except ET.ParseError:
+            return []
+        steps: list[dict[str, str]] = []
+        for step_el in root.iter("step"):
+            params = step_el.findall("parameterizedString")
+            action = ""
+            expected = ""
+            if len(params) >= 1:
+                raw_action = params[0].text or ""
+                action = re.sub(r"<[^>]+>", " ", raw_action).strip()
+            if len(params) >= 2:
+                raw_expected = params[1].text or ""
+                expected = re.sub(r"<[^>]+>", " ", raw_expected).strip()
+            if action or expected:
+                steps.append({"action": action, "expected": expected})
+        return steps
+
+    async def fetch_test_case_details(self, case_ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch work-item details (title + parsed steps) for a list of Test Case IDs.
+
+        Returns a list of dicts: {id, title, steps: [{action, expected}]}
+        """
+        if not case_ids:
+            return []
+
+        fields = [
+            "System.Id",
+            "System.Title",
+            "Microsoft.VSTS.TCM.Steps",
+        ]
+        results: list[dict[str, Any]] = []
+
+        try:
+            async with httpx.AsyncClient() as client:
+                auth = ("", self.pat)
+                for i in range(0, len(case_ids), 200):
+                    chunk = case_ids[i : i + 200]
+                    response = await client.get(
+                        f"{self.base_url}/wit/workitems",
+                        auth=auth,
+                        params={
+                            "ids": ",".join(chunk),
+                            "fields": ",".join(fields),
+                            "api-version": "7.1",
+                        },
+                        timeout=60,
+                    )
+                    if response.status_code != 200:
+                        logger.error(f"fetch_test_case_details failed: {response.text}")
+                        continue
+                    for item in response.json().get("value", []):
+                        item_fields = item.get("fields", {})
+                        steps_xml = item_fields.get("Microsoft.VSTS.TCM.Steps") or ""
+                        results.append(
+                            {
+                                "id": str(item.get("id", "")),
+                                "title": item_fields.get("System.Title", ""),
+                                "steps": self._parse_steps_xml(steps_xml),
+                            }
+                        )
+        except Exception as exc:
+            logger.error(f"Error in fetch_test_case_details: {exc}")
+
+        return results
 
 
 __all__ = ["AzureDevOpsClient"]

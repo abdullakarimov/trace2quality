@@ -627,12 +627,35 @@ async def _collect_azure_tests(
                 if len(titles) > 3:
                     log_fn("DEBUG", f"  ... and {len(titles) - 3} more test cases")
 
-            if "api" in suite_name.lower():
+            # Fetch full work-item details (steps) for each test case
+            case_ids = [
+                str((item.get("workItem") or {}).get("id") or item.get("id") or "")
+                for item in suite_tests
+            ]
+            case_ids = [cid for cid in case_ids if cid]
+            enriched: list[dict[str, Any]] = []
+            if case_ids:
+                if log_fn:
+                    log_fn("DEBUG", f"Fetching steps for {len(case_ids)} test cases in suite {suite_id}")
+                try:
+                    enriched = await azure_client.fetch_test_case_details(case_ids)
+                except Exception as exc:
+                    if log_fn:
+                        log_fn("WARNING", f"Could not fetch test case details for suite {suite_id}: {exc}")
+                    # Fall back to title-only dicts
+                    enriched = [{"id": cid, "title": t, "steps": []} for cid, t in zip(case_ids, titles)]
+
+            if log_fn and enriched:
+                total_steps = sum(len(tc.get("steps") or []) for tc in enriched)
+                log_fn("DEBUG", f"Suite {suite_id}: fetched {total_steps} steps across {len(enriched)} test cases")
+
+            # Classify by plan, not by suite name — plan 2015 = API, plan 438 = UI
+            if str(plan_id) == str(API_PLAN_ID):
                 matched_api_suites.append({"id": suite_id, "name": suite_name})
-                api_tests.extend(titles)
+                api_tests.extend(enriched)
             else:
                 matched_ui_suites.append({"id": suite_id, "name": suite_name})
-                ui_tests.extend(titles)
+                ui_tests.extend(enriched)
 
     return {
         "api_tests": api_tests,
