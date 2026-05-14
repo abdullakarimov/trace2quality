@@ -39,6 +39,10 @@ def _render_update_coverage_page(
     validation_error: str | None = None,
     run_id: str | None = None,
 ) -> str:
+    settings = get_settings()
+    confluence_base_url = str(settings.confluence_base_url or "").rstrip("/")
+    confluence_space = str(settings.confluence_space or "")
+
     values = {
         "mode": "single",
         "us_code": "",
@@ -95,12 +99,28 @@ def _render_update_coverage_page(
         </div>
         <script>
             const runId = "{run_id}";
+            const confluenceBaseUrl = "{confluence_base_url}";
+            const confluenceSpace = "{confluence_space}";
             let done = false;
             const monitorStartedAt = Date.now();
             let lastLogTimestamp = null;
             const POLL_INTERVAL_MS = 1000;
             const ARTIFACT_POLL_EVERY_TICKS = 5;
             let tickCount = 0;
+
+            function renderTcPageCell(row) {{
+                const raw = String(row.tc_page_id || "").trim();
+                if (!raw) return "";
+
+                // If backend ever provides full URL, use it directly.
+                if (/^https?:\/\//i.test(raw)) {{
+                    return `<a href="${{raw}}" target="_blank" rel="noopener noreferrer">${{raw}}</a>`;
+                }}
+
+                // Confluence cloud page URL from page id and configured space.
+                const href = `${{confluenceBaseUrl}}/wiki/spaces/${{encodeURIComponent(confluenceSpace)}}/pages/${{encodeURIComponent(raw)}}`;
+                return `<a href="${{href}}" target="_blank" rel="noopener noreferrer">${{raw}}</a>`;
+            }}
 
             function fmtElapsed(ms) {{
                 const sec = Math.floor(ms / 1000);
@@ -210,7 +230,7 @@ def _render_update_coverage_page(
                                 body.innerHTML = "";
                                 for (const row of rows) {{
                                     const tr = document.createElement("tr");
-                                    tr.innerHTML = `<td>${{row.us_code || ""}}</td><td>${{row.action || ""}}</td><td>${{row.tc_page_id || ""}}</td><td>${{row.message || ""}}</td>`;
+                                    tr.innerHTML = `<td>${{row.us_code || ""}}</td><td>${{row.action || ""}}</td><td>${{renderTcPageCell(row)}}</td><td>${{row.message || ""}}</td>`;
                                     body.appendChild(tr);
                                 }}
                             }}

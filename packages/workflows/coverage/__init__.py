@@ -92,8 +92,16 @@ def _extract_acceptance_criteria(storage_html: str) -> list[str]:
 def _extract_code_from_title(title: str) -> Optional[str]:
     if not title:
         return None
-    match = re.match(r"^\s*(US-[0-9]+(?:\.[0-9]+)*)\b", title)
+    match = re.search(r"\b(US-[0-9]+(?:\.[0-9]+)*)\b", title, flags=re.IGNORECASE)
     return match.group(1) if match else None
+
+
+def _extract_epic_token_from_title(title: str) -> str:
+    """Extract a compact epic marker (e.g. E3, EA1) from a title like '[E3]: ...'."""
+    if not title:
+        return ""
+    match = re.search(r"\[\s*([A-Z]+\d+(?:-\d+)?)\s*\]", title, flags=re.IGNORECASE)
+    return match.group(1).upper() if match else ""
 
 
 def _extract_mapped_page(entry: Any) -> Optional[dict[str, Any]]:
@@ -365,6 +373,11 @@ def _normalize_us_code(us_code: str) -> str:
     return re.sub(r"[-\s]+", "", us_code.strip().lower())
 
 
+def _is_supported_us_code(code: str) -> bool:
+    """Only process product user stories (US-*), not admin stories like AUS-*."""
+    return bool(re.match(r"^US-\d+(?:\.\d+)*$", str(code or "").strip(), flags=re.IGNORECASE))
+
+
 def _extract_issue_summary(issue: dict[str, Any]) -> str:
     return str(issue.get("summary") or (issue.get("fields") or {}).get("summary") or "")
 
@@ -390,18 +403,25 @@ def _iter_jira_catalog_issues(jira_catalog: Any) -> list[dict[str, Any]]:
 
 
 def _find_best_jira_issue_for_us(us_code: str, issues: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """Legacy-style Jira matcher: exact US token + canonical summary preference."""
+    """Jira Story matcher: exact US token + canonical summary preference."""
     if not issues:
         return None
 
+    target = _normalize_us_code(us_code)
+
+    # Prefer strict US-code equality extracted from summary (rejects US-3.3.1 for US-3.1).
+    exact_by_extracted_code: list[dict[str, Any]] = []
+    for issue in issues:
+        summary = _extract_issue_summary(issue)
+        extracted = _extract_code_from_title(summary)
+        if extracted and _normalize_us_code(extracted) == target:
+            exact_by_extracted_code.append(issue)
+
+    if exact_by_extracted_code:
+        issues = exact_by_extracted_code
+
     pattern = re.compile(rf"\b{re.escape(us_code)}\b", re.IGNORECASE)
     matched = [issue for issue in issues if pattern.search(_extract_issue_summary(issue))]
-    if not matched:
-        normalized = _normalize_us_code(us_code)
-        matched = [
-            issue for issue in issues
-            if _normalize_us_code(_extract_issue_summary(issue)).find(normalized) != -1
-        ]
     if not matched:
         return None
 
@@ -421,6 +441,22 @@ def _find_best_jira_issue_for_us(us_code: str, issues: list[dict[str, Any]]) -> 
     pool = filtered if filtered else matched
     pool.sort(key=lambda issue: len(_extract_issue_summary(issue)))
     return pool[0]
+
+
+def _build_jira_title_hint(us_title: str) -> str:
+    """Return a short title fragment that is likely to appear in Jira Story summaries."""
+    title = str(us_title or "").strip()
+    if not title:
+        return ""
+
+    # Remove a leading US code if present, then keep a compact human-readable fragment.
+    title = re.sub(r"^\s*US[-\s]*\d+(?:\.\d+)*\s*[|:-]?\s*", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s*\(.*?\)\s*", " ", title)
+    title = re.sub(r"\s+", " ", title).strip(" |-:\t")
+    words = [w for w in title.split(" ") if w]
+    if not words:
+        return ""
+    return " ".join(words[: min(2, len(words))])
 
 
 def _build_related_links_html(
@@ -448,19 +484,19 @@ def _build_related_links_html(
             f"{us_code}</a>"
         )
 
-    jira_line = "<li>Jira QA задача: не найдена</li>"
+    jira_line = "<li>Jira Story: не найдена</li>"
     if jira_links:
         issue = jira_links[0]
         issue_key = str(issue.get("key") or "")
         issue_url = str(issue.get("url") or "")
         if issue_url:
             jira_line = (
-                '<li>Jira QA задача: '
+                '<li>Jira Story: '
                 f'<a href="{issue_url}" data-card-appearance="inline">{issue_key}</a>'
                 "</li>"
             )
         elif issue_key:
-            jira_line = f"<li>Jira QA задача: {issue_key}</li>"
+            jira_line = f"<li>Jira Story: {issue_key}</li>"
 
     azure_lines: list[str] = []
     if azure_test_plan_url:
@@ -725,6 +761,7 @@ async def run_update_coverage_pages_workflow(
         all_us_codes = [code for code in all_us_codes if code]
 
     all_us_codes = list(dict.fromkeys(all_us_codes))
+    all_us_codes = [code for code in all_us_codes if _is_supported_us_code(code)]
 
     if not all_us_codes:
         raise RuntimeError(
@@ -732,7 +769,7 @@ async def run_update_coverage_pages_workflow(
         )
 
     if mode == "single":
-        target_us_codes = [us_code] if us_code else []
+        target_us_codes = [us_code] if us_code and _is_supported_us_code(us_code) else []
     elif mode == "all_mapped":
         target_us_codes = []
         for code in all_us_codes:
@@ -772,7 +809,7 @@ async def run_update_coverage_pages_workflow(
     # ─────────────────────────────────────────────────────────────────────────────
     # PRE-FETCH AZURE DATA UPFRONT FOR BATCH MODES (Optimize batch performance)
     # ─────────────────────────────────────────────────────────────────────────────
-    # Per legacy script behavior: for batch modes, pre-load full Azure snapshot once,
+    # For batch modes, pre-load full Azure snapshot once,
     # then reuse for all USes. Single mode fetches per-US subsets on demand.
     azure_snapshot: dict[str, Any] = {}
     if mode != "single":
@@ -821,7 +858,7 @@ async def run_update_coverage_pages_workflow(
         log("INFO", f"Processing {item_us_code} ({index + 1}/{len(target_us_codes)})")
         
         # ─────────────────────────────────────────────────────────────────────────────
-        # DATA FLOW ORDER (per legacy script):
+        # DATA FLOW ORDER:
         # 1. Resolve US entry from catalog
         # 2. FETCH US page from Confluence (get story text & acceptance criteria)
         # 3. Match API doc via Gemini (using story text)
@@ -916,30 +953,35 @@ async def run_update_coverage_pages_workflow(
             )
 
             jira_links: list[dict[str, str]] = []
-            jira_search_jql = (
-                'project = MB '
-                'AND issuetype = "QA task" '
-                'AND summary ~ "US*" '
-                'AND summary ~ "E*" '
-                'ORDER BY created DESC'
-            )
-            issues = await jira_client.fetch_issues(jira_search_jql)
-            best_live_issue = _find_best_jira_issue_for_us(item_us_code, issues)
 
-            if not best_live_issue:
-                targeted_jql = (
-                'project = MB '
-                'AND issuetype = "QA task" '
-                f'AND summary ~ "{item_us_code}" '
-                'ORDER BY created DESC'
-            )
-                issues = await jira_client.fetch_issues(targeted_jql)
-                best_live_issue = _find_best_jira_issue_for_us(item_us_code, issues)
+            jira_queries = [
+                (
+                    'issuetype = Story '
+                    f'AND summary ~ "{item_us_code}" '
+                    'ORDER BY created DESC'
+                ),
+            ]
+
+            aggregated_issues: list[dict[str, Any]] = []
+            seen_jira_keys: set[str] = set()
+            for query in jira_queries:
+                fetched = await jira_client.fetch_issues(query)
+                for issue in fetched:
+                    key = _extract_issue_key(issue)
+                    if key and key in seen_jira_keys:
+                        continue
+                    if key:
+                        seen_jira_keys.add(key)
+                    aggregated_issues.append(issue)
+                if len(aggregated_issues) >= 100:
+                    break
+
+            best_live_issue = _find_best_jira_issue_for_us(item_us_code, aggregated_issues)
 
             if best_live_issue:
                 jira_links.append(
                     {
-                        "key": _extract_issue_key(best_live_issue) or "Jira Task",
+                        "key": _extract_issue_key(best_live_issue) or "Jira Story",
                         "url": _extract_issue_url(best_live_issue, jira_client.base_url),
                     }
                 )
@@ -950,7 +992,7 @@ async def run_update_coverage_pages_workflow(
                 if best_catalog_issue:
                     jira_links.append(
                         {
-                            "key": _extract_issue_key(best_catalog_issue) or "Jira Task",
+                            "key": _extract_issue_key(best_catalog_issue) or "Jira Story",
                             "url": _extract_issue_url(best_catalog_issue, jira_client.base_url),
                         }
                     )
@@ -1003,7 +1045,7 @@ async def run_update_coverage_pages_workflow(
                 getattr(azure_client, "org_url", ""),
                 getattr(azure_client, "project", ""),
                 getattr(confluence_client, "base_url", ""),
-                getattr(confluence_client, "space", "MB"),
+                getattr(confluence_client, "space", ""),
             )
             generated_html = _ensure_related_links_section(generated_html, related_links_html)
 

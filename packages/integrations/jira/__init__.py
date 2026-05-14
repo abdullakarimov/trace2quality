@@ -66,7 +66,11 @@ class JiraClient(IntegrationClient):
                 response = await client.get(
                     f"{self.base_url}/rest/api/3/search/jql",
                     auth=auth,
-                    params={"jql": jql, "maxResults": 100},
+                    params={
+                        "jql": jql,
+                        "maxResults": 100,
+                        "fields": "summary,issuetype,status",
+                    },
                     timeout=30,
                 )
                 if response.status_code == 200:
