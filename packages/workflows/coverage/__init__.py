@@ -229,6 +229,11 @@ _API_DOC_TITLE_RE = re.compile(r"\bAPI(?:\s+v?\d+(?:\.\d+)*)?\s*$", re.IGNORECAS
 _epic_tc_parent_cache: dict[str, Optional[str]] = {}
 
 
+def _is_archived_title(title: str) -> bool:
+    """Return True when the title contains an archive marker like '[Архив]'."""
+    return bool(re.search(r"\[\s*[АаAa]рхив\s*\]", title, flags=re.IGNORECASE))
+
+
 def _is_api_doc_title(title: str) -> bool:
     """Return True when the title looks like an API-documentation page rather than a US spec.
 
@@ -237,6 +242,16 @@ def _is_api_doc_title(title: str) -> bool:
     Pure user-story spec pages ("US-9.1.1 | Базовый счет") do not.
     """
     return bool(_API_DOC_TITLE_RE.search(title))
+
+
+def _api_score(t: str) -> int:
+    """Lower is better (more spec-like).  Used to prefer US-spec pages over API-doc pages."""
+    if _is_api_doc_title(t):
+        return 2
+    desc = t.split("|", 1)[-1] if "|" in t else t
+    if re.search(r"\bAPI\b", desc, re.IGNORECASE):
+        return 1
+    return 0
 
 
 def _epic_number_from_us_code(us_code: str) -> Optional[str]:
@@ -298,23 +313,35 @@ async def _fetch_provider_us_pages(confluence_client, log_fn=None) -> list[dict[
     # Deduplicate by US code.  When both an API-doc page ("US-X | … API") and a plain
     # US-spec page ("US-X | …") share the same code, prefer the spec page so that
     # tc_title derivation doesn't inherit the "API" suffix.
+    #
+    # Preference order (highest wins):
+    #   1. Not an API-doc title  (no trailing "API" word)
+    #   2. Not containing "API" as a standalone word at all in the description part
+    #   3. Shorter title (fewer characters — spec pages tend to be shorter)
+
     by_code: dict[str, dict[str, Any]] = {}
     for page in pages:
-        code = _extract_code_from_title(str(page.get("title") or ""))
+        title = str(page.get("title") or "")
+        if _is_archived_title(title):
+            continue
+        code = _extract_code_from_title(title)
         if not code:
             continue
         entry = {
             "id": str(page.get("id") or ""),
-            "title": page.get("title", ""),
+            "title": title,
             "story_code": code,
             "url": page.get("url", ""),
         }
         existing = by_code.get(code)
         if existing is None:
             by_code[code] = entry
-        elif _is_api_doc_title(existing["title"]) and not _is_api_doc_title(entry["title"]):
-            # Replace an API-doc entry with a proper spec entry
-            by_code[code] = entry
+        else:
+            # Prefer the more spec-like entry; on tie, prefer the shorter title
+            if _api_score(entry["title"]) < _api_score(existing["title"]):
+                by_code[code] = entry
+            elif _api_score(entry["title"]) == _api_score(existing["title"]) and len(entry["title"]) < len(existing["title"]):
+                by_code[code] = entry
 
     out = list(by_code.values())
     if log_fn:
@@ -997,20 +1024,32 @@ async def run_update_coverage_pages_workflow(
                         f'AND title ~ "{item_us_code} |"'
                     )
                     fallback_pages = await confluence_client.search_pages(fallback_cql2, limit=5)
-                # Filter to pages whose extracted code exactly matches
+                # Filter to pages whose extracted code exactly matches; among candidates
+                # pick the most spec-like (lowest _api_score, then shortest title).
+                best_fp: Optional[dict[str, Any]] = None
                 for fp in fallback_pages:
                     fp_code = _extract_code_from_title(str(fp.get("title") or ""))
-                    if fp_code == item_us_code and not _is_api_doc_title(str(fp.get("title") or "")):
-                        us_record = {
-                            "id": str(fp.get("id") or ""),
-                            "title": fp.get("title", ""),
-                            "story_code": item_us_code,
-                            "url": fp.get("url", ""),
-                        }
-                        log("INFO", f"Found via direct lookup: id={us_record['id']} title={us_record['title']}")
-                        # Cache it so subsequent lookups for the same code work
-                        epic_us_pages.append(us_record)
-                        break
+                    fp_title = str(fp.get("title") or "")
+                    if fp_code != item_us_code or _is_archived_title(fp_title):
+                        continue
+                    candidate = {
+                        "id": str(fp.get("id") or ""),
+                        "title": fp_title,
+                        "story_code": item_us_code,
+                        "url": fp.get("url", ""),
+                    }
+                    if best_fp is None:
+                        best_fp = candidate
+                    else:
+                        if _api_score(fp_title) < _api_score(best_fp["title"]):
+                            best_fp = candidate
+                        elif _api_score(fp_title) == _api_score(best_fp["title"]) and len(fp_title) < len(best_fp["title"]):
+                            best_fp = candidate
+                if best_fp:
+                    us_record = best_fp
+                    log("INFO", f"Found via direct lookup: id={us_record['id']} title={us_record['title']}")
+                    # Cache it so subsequent lookups for the same code work
+                    epic_us_pages.append(us_record)
             if not us_record:
                 raise RuntimeError(f"User story not found: {item_us_code}")
             log("INFO", f"Resolved user story record for {item_us_code}")

@@ -140,6 +140,7 @@ async def run_triage_bugs_workflow(
     jql: str = DEFAULT_BUG_JQL,
     max_results: int = 50,
     apply: bool = False,
+    add_comment: bool = False,
     severity_field_id: str = DEFAULT_SEVERITY_FIELD_ID,
     impact_field_id: str = DEFAULT_IMPACT_FIELD_ID,
     target_status: str = DEFAULT_TARGET_STATUS,
@@ -156,7 +157,7 @@ async def run_triage_bugs_workflow(
       4. If `apply=True` and the LLM confirms it is a real bug:
          - Update the Jira issue with severity and impact custom fields.
          - Transition the issue to `target_status`.
-         - Add a triage comment summarising the assessment.
+                 - Optionally add a triage comment when `add_comment=True`.
 
     Returns a structured summary dict suitable for artifact persistence.
     """
@@ -166,7 +167,10 @@ async def run_triage_bugs_workflow(
         if log_fn:
             log_fn(level, msg)
 
-    _log("INFO", f"Triage workflow started: jql={jql!r}, max_results={max_results}, apply={apply}")
+    _log(
+        "INFO",
+        f"Triage workflow started: jql={jql!r}, max_results={max_results}, apply={apply}, add_comment={add_comment}",
+    )
 
     # ── 1. Fetch bug issues from Jira ──────────────────────────────────────────
     try:
@@ -328,17 +332,18 @@ async def run_triage_bugs_workflow(
         except Exception as exc:
             _log("WARNING", f"  Transition raised: {exc}")
 
-        comment_text = (
-            f"Triaged by automated system:\n"
-            f"- Severity: {severity}\n"
-            f"- Impact: {impact}\n"
-            f"- Priority: {priority}\n"
-            f"- Reason: {assessment.get('reasoning', '')}"
-        )
-        try:
-            await jira_client.add_comment(issue_key, comment_text)
-        except Exception as exc:
-            _log("WARNING", f"  Comment failed: {exc}")
+        if add_comment:
+            comment_text = (
+                f"Triaged by automated system:\n"
+                f"- Severity: {severity}\n"
+                f"- Impact: {impact}\n"
+                f"- Priority: {priority}\n"
+                f"- Reason: {assessment.get('reasoning', '')}"
+            )
+            try:
+                await jira_client.add_comment(issue_key, comment_text)
+            except Exception as exc:
+                _log("WARNING", f"  Comment failed: {exc}")
 
         result["updated"] = update_ok or transition_ok
         result["outcome"] = "triaged" if result["updated"] else "partial_update"
@@ -354,6 +359,7 @@ async def run_triage_bugs_workflow(
         "skipped_not_real_bug": skipped_not_real,
         "errors": error_count,
         "apply": apply,
+        "add_comment": add_comment,
         "jql": jql,
         "target_status": target_status,
     }

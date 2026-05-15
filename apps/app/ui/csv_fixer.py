@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 import io
 import itertools
+import unicodedata
+from urllib.parse import quote
 import zipfile
 from typing import List, Optional
 
@@ -392,8 +394,18 @@ _FORM_PAGE = """
 
             const contentDisposition = resp.headers.get('Content-Disposition') || '';
             let filename = 'fixed.csv';
-            const match = contentDisposition.match(/filename="([^"]+)"/);
-            if (match) filename = match[1];
+            const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+            if (utf8Match) {
+                try {
+                    filename = decodeURIComponent(utf8Match[1]);
+                } catch (_) {
+                    // Fall back to simple filename parsing.
+                }
+            }
+            if (filename === 'fixed.csv') {
+                const match = contentDisposition.match(/filename="([^"]+)"/);
+                if (match) filename = match[1];
+            }
 
             const blob = await resp.blob();
             const url = URL.createObjectURL(blob);
@@ -453,7 +465,7 @@ async def csv_fixer_process(
         return Response(
             content=fixed.encode("utf-8-sig"),
             media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={"Content-Disposition": _build_content_disposition(filename)},
         )
 
     # Multiple files → zip archive
@@ -484,3 +496,46 @@ def _fixed_filename(original: str) -> str:
         stem, ext = original.rsplit(".", 1)
         return f"{stem}_fixed.{ext}"
     return f"{original}_fixed"
+
+
+def _ascii_filename_fallback(filename: str) -> str:
+    """Build a latin-1-safe fallback filename for HTTP headers.
+
+    Keep readable latin-1 characters when possible, transliterate where we can,
+    and only use underscores as a last resort.
+    """
+    fallback = []
+    for ch in filename:
+        code = ord(ch)
+
+        # Keep printable latin-1 characters except header-delimiter chars.
+        if (32 <= code <= 255) and ch not in {'"', '\\', ';'}:
+            fallback.append(ch)
+            continue
+
+        # Try transliteration for non-latin-1 characters (e.g., accents/emoji).
+        ascii_chunk = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode("ascii")
+        if ascii_chunk:
+            safe_chunk = "".join(c for c in ascii_chunk if 32 <= ord(c) <= 126 and c not in {'"', '\\', ';'})
+            fallback.append(safe_chunk or "_")
+        else:
+            fallback.append("_")
+
+    candidate = "".join(fallback).strip().strip(".") or "download.csv"
+    return candidate
+
+
+def _build_content_disposition(filename: str) -> str:
+    """Return RFC 5987 compatible Content-Disposition for UTF-8 filenames.
+
+    If the original filename is latin-1 safe, include classic `filename="..."`
+    for older clients. Otherwise, send only `filename*` to avoid lossy
+    underscore fallbacks (e.g. Cyrillic names).
+    """
+    encoded = quote(filename, safe="")
+    try:
+        filename.encode("latin-1")
+        fallback = _ascii_filename_fallback(filename)
+        return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+    except UnicodeEncodeError:
+        return f"attachment; filename*=UTF-8''{encoded}"

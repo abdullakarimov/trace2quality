@@ -157,8 +157,8 @@ async def create_triage_bugs_run(
 
     When `apply` is False (default) the workflow runs in dry-run mode: it
     evaluates every bug and reports what it would do but makes no changes to Jira.
-    Set `apply: true` to actually update severity/impact fields, transition issues,
-    and add triage comments.
+    Set `apply: true` to actually update severity/impact fields and transition issues.
+    Triage comments remain disabled unless `add_comment: true` is explicitly set.
     """
     correlation_id = getattr(request.state, "correlation_id", None)
 
@@ -199,6 +199,7 @@ async def create_triage_bugs_run(
 class _ApplyIssuesRequest(BaseModel):
     run_id: str
     issue_keys: list[str] | None = None  # None / empty = apply all real-bug rows
+    add_comment: bool | None = None
 
 
 @router.post("/triage-bugs/apply-issues")
@@ -207,9 +208,10 @@ async def apply_triage_issues(
     request: Request,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Apply triage results (severity/impact/priority/transition/comment) to specific Jira issues
+    """Apply triage results (severity/impact/priority/transition) to specific Jira issues
     from an existing dry-run.  If ``issue_keys`` is omitted every row where
-    ``is_real_bug=true`` is applied.
+    ``is_real_bug=true`` is applied. Jira comments are only added when
+    ``add_comment=true``.
     """
     # ── 1. Validate the source run ────────────────────────────────────────────
     run = db.query(WorkflowRunModel).filter(WorkflowRunModel.id == payload.run_id).first()
@@ -253,6 +255,11 @@ async def apply_triage_issues(
     severity_field_id = str(params.get("severity_field_id") or triage_workflow.DEFAULT_SEVERITY_FIELD_ID)
     impact_field_id = str(params.get("impact_field_id") or triage_workflow.DEFAULT_IMPACT_FIELD_ID)
     target_status = str(params.get("target_status") or triage_workflow.DEFAULT_TARGET_STATUS)
+    add_comment = (
+        payload.add_comment
+        if payload.add_comment is not None
+        else bool(params.get("add_comment", False))
+    )
 
     # ── 5. Build Jira client ───────────────────────────────────────────────────
     jira_client = integration_registry.get_client(
@@ -283,14 +290,15 @@ async def apply_triage_issues(
                 },
             )
             await jira_client.transition_issue(key, target_status)
-            comment_text = (
-                f"Triaged by automated system:\n"
-                f"- Severity: {severity}\n"
-                f"- Impact: {impact}\n"
-                f"- Priority: {priority}\n"
-                f"- Reason: {reasoning}"
-            )
-            await jira_client.add_comment(key, comment_text)
+            if add_comment:
+                comment_text = (
+                    f"Triaged by automated system:\n"
+                    f"- Severity: {severity}\n"
+                    f"- Impact: {impact}\n"
+                    f"- Priority: {priority}\n"
+                    f"- Reason: {reasoning}"
+                )
+                await jira_client.add_comment(key, comment_text)
             applied.append(key)
         except Exception as exc:
             errors.append({"key": key, "error": str(exc)})
@@ -312,4 +320,5 @@ async def apply_triage_issues(
         "errors": errors,
         "applied_count": len(applied),
         "error_count": len(errors),
+        "add_comment": bool(add_comment),
     }

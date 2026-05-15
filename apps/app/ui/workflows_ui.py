@@ -41,6 +41,19 @@ def _bool_from_form(value: str | None) -> bool:
     return str(value or "").lower() in {"1", "true", "on", "yes"}
 
 
+_FRIENDLY_VALIDATION_MESSAGES: dict[str, str] = {
+    "us_code is required when mode=single": "Please enter a User Story code (e.g. US-3.3.1) when running in Single mode.",
+}
+
+
+def _friendly_coverage_validation_error(exc: Exception) -> str:
+    raw = str(exc)
+    for key, message in _FRIENDLY_VALIDATION_MESSAGES.items():
+        if key in raw:
+            return message
+    return raw
+
+
 def _render_update_coverage_page(
     *,
     form_values: dict[str, str] | None = None,
@@ -67,7 +80,7 @@ def _render_update_coverage_page(
 
     mode = values.get("mode", "single")
     error_block = (
-        f'<div class="error">Validation error: {validation_error}</div>'
+        f'<div class="error">{validation_error}</div>'
         if validation_error
         else ""
     )
@@ -165,7 +178,8 @@ def _render_update_coverage_page(
                 if (logsResp.ok) {{
                     const logsData = await logsResp.json();
                     const logs = logsData.logs || [];
-                    const lines = logs.map((l) => `${{l.timestamp}} [${{l.level}}] ${{l.message}}`);
+                    const stripLogPrefix = (msg) => msg.replace(/^\[[\dT:.+\-Z]+\]\s*\[cid=[^\]]+\]\s*/, "");
+                    const lines = logs.map((l) => `${{l.timestamp}} [${{l.level}}] ${{stripLogPrefix(l.message)}}`);
                     const logsEl = document.getElementById("liveLogs");
                     logsEl.textContent = lines.join("\\n") || "No logs yet";
 
@@ -178,7 +192,7 @@ def _render_update_coverage_page(
                     const currentStepEl = document.getElementById("currentStep");
                     if (logs.length > 0) {{
                         const last = logs[logs.length - 1];
-                        currentStepEl.textContent = `Current step: [${{last.level}}] ${{last.message}}`;
+                        currentStepEl.textContent = `Current step: [${{last.level}}] ${{stripLogPrefix(last.message)}}`;
                     }} else {{
                         currentStepEl.textContent = "Current step: waiting for first log line...";
                     }}
@@ -388,6 +402,7 @@ def _render_triage_bugs_page(
         "jql": default_jql,
         "max_results": "50",
         "apply": "",
+        "add_comment": "",
         "severity_field_id": "customfield_10865",
         "impact_field_id": "customfield_10004",
         "target_status": "Triage",
@@ -428,6 +443,7 @@ def _render_triage_bugs_page(
             <h4>Per-Issue Results</h4>
             <div id="bulkApplyBar" style="display:none; margin-bottom:8px;">
                 <button id="btnApplyAll" class="btn-apply-all" onclick="applyAll()">✅ Apply All Real Bugs to Jira</button>
+                <label style="margin-left:12px; font-size:13px;"><input type="checkbox" id="addCommentApply" /> Add Jira triage comments</label>
                 <span id="bulkApplyStatus" style="margin-left:12px; font-size:13px;"></span>
             </div>
             <table>
@@ -495,7 +511,8 @@ def _render_triage_bugs_page(
                 if (logsResp.ok) {{
                     const logsData = await logsResp.json();
                     const logs = logsData.logs || [];
-                    const lines = logs.map((l) => `${{l.timestamp}} [${{l.level}}] ${{l.message}}`);
+                    const stripLogPrefix = (msg) => msg.replace(/^\[[\dT:.+\-Z]+\]\s*\[cid=[^\]]+\]\s*/, "");
+                    const lines = logs.map((l) => `${{l.timestamp}} [${{l.level}}] ${{stripLogPrefix(l.message)}}`);
                     const logsEl = document.getElementById("liveLogs");
                     logsEl.textContent = lines.join("\\n") || "No logs yet";
 
@@ -508,7 +525,7 @@ def _render_triage_bugs_page(
                     const currentStepEl = document.getElementById("currentStep");
                     if (logs.length > 0) {{
                         const last = logs[logs.length - 1];
-                        currentStepEl.textContent = `Current step: [${{last.level}}] ${{last.message}}`;
+                        currentStepEl.textContent = `Current step: [${{last.level}}] ${{stripLogPrefix(last.message)}}`;
                     }} else {{
                         currentStepEl.textContent = "Current step: waiting for first log line...";
                     }}
@@ -611,10 +628,11 @@ def _render_triage_bugs_page(
 
             async function _callApply(issueKeys) {{
                 const statusEl = document.getElementById("bulkApplyStatus");
+                const addComment = !!document.getElementById("addCommentApply")?.checked;
                 const resp = await fetch("/api/workflows/triage-bugs/apply-issues", {{
                     method: "POST",
                     headers: {{ "Content-Type": "application/json" }},
-                    body: JSON.stringify({{ run_id: runId, issue_keys: issueKeys }}),
+                    body: JSON.stringify({{ run_id: runId, issue_keys: issueKeys, add_comment: addComment }}),
                 }});
                 if (!resp.ok) {{
                     const err = await resp.text();
@@ -625,7 +643,9 @@ def _render_triage_bugs_page(
             }}
 
             async function applyOne(issueKey, btn) {{
-                if (!confirm(`Apply triage to ${{issueKey}} in Jira?`)) return;
+                const addComment = !!document.getElementById("addCommentApply")?.checked;
+                const commentSuffix = addComment ? " and post a triage comment" : "";
+                if (!confirm(`Apply triage to ${{issueKey}} in Jira${{commentSuffix}}?`)) return;
                 btn.disabled = true;
                 btn.textContent = "...";
                 const result = await _callApply([issueKey]);
@@ -643,7 +663,9 @@ def _render_triage_bugs_page(
             async function applyAll() {{
                 const realBugKeys = lastRows.filter(r => r.is_real_bug).map(r => r.key);
                 if (!realBugKeys.length) return;
-                if (!confirm(`Apply triage to ${{realBugKeys.length}} real bug(s) in Jira? This will update severity, impact, priority and transition status.`)) return;
+                const addComment = !!document.getElementById("addCommentApply")?.checked;
+                const commentSuffix = addComment ? " and add triage comments" : "";
+                if (!confirm(`Apply triage to ${{realBugKeys.length}} real bug(s) in Jira? This will update severity, impact, priority and transition status${{commentSuffix}}.`)) return;
                 const statusEl = document.getElementById("bulkApplyStatus");
                 const allBtn = document.getElementById("btnApplyAll");
                 allBtn.disabled = true;
@@ -778,7 +800,12 @@ def _render_triage_bugs_page(
 
                 <div class="checkbox">
                     <input type="checkbox" id="apply" name="apply" {"checked" if _bool_from_form(values.get('apply')) else ""} />
-                    <label for="apply">Apply (update Jira fields, transition status, add comment)</label>
+                    <label for="apply">Apply (update Jira fields and transition status)</label>
+                </div>
+
+                <div class="checkbox">
+                    <input type="checkbox" id="add_comment" name="add_comment" {"checked" if _bool_from_form(values.get('add_comment')) else ""} />
+                    <label for="add_comment">Add Jira triage comment (optional, off by default)</label>
                 </div>
 
                 <button type="submit">Run Triage</button>
@@ -958,6 +985,7 @@ async def run_triage_bugs_submit(request: Request, db: Session = Depends(get_db)
         "jql": str(form.get("jql") or "").strip() or 'issuetype in ("BE BUG", "Mobile bug", Bug, "FE bug") AND status = Backlog',
         "max_results": int(str(form.get("max_results") or "50").strip() or "50"),
         "apply": _bool_from_form(form.get("apply")),
+        "add_comment": _bool_from_form(form.get("add_comment")),
         "severity_field_id": str(form.get("severity_field_id") or "customfield_10865").strip(),
         "impact_field_id": str(form.get("impact_field_id") or "customfield_10004").strip(),
         "target_status": str(form.get("target_status") or "Triage").strip(),
@@ -1011,9 +1039,10 @@ async def run_update_coverage_submit(request: Request, db: Session = Depends(get
     try:
         validated = UpdateCoverageRunRequest(**payload)
     except (ValidationError, ValueError) as exc:
+        friendly = _friendly_coverage_validation_error(exc)
         return _render_update_coverage_page(
             form_values=form_values,
-            validation_error=str(exc),
+            validation_error=friendly,
         )
 
     run_id = str(uuid4())

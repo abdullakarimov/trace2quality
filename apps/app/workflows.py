@@ -402,6 +402,7 @@ def run_workflow(run_id: str, workflow_key: str):
                     jql=params.get("jql", triage.DEFAULT_BUG_JQL),
                     max_results=int(params.get("max_results", 50)),
                     apply=bool(params.get("apply", False)),
+                    add_comment=bool(params.get("add_comment", False)),
                     severity_field_id=str(params.get("severity_field_id", triage.DEFAULT_SEVERITY_FIELD_ID)),
                     impact_field_id=str(params.get("impact_field_id", triage.DEFAULT_IMPACT_FIELD_ID)),
                     target_status=str(params.get("target_status", triage.DEFAULT_TARGET_STATUS)),

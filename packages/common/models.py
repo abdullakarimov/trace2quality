@@ -123,6 +123,10 @@ class TriageBugTicketsRunRequest(BaseModel):
     )
     max_results: int = Field(default=50, ge=1, le=500, description="Maximum bugs to process")
     apply: bool = Field(default=False, description="When False, runs in dry-run mode without modifying Jira")
+    add_comment: bool = Field(
+        default=False,
+        description="When True and apply=True, add triage reasoning comments to Jira issues",
+    )
     severity_field_id: str = Field(
         default="customfield_10865", description="Jira custom field ID for Severity"
     )

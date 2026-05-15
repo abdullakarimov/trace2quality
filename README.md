@@ -9,7 +9,7 @@ t2q orchestrates enterprise QA workflows through a web UI and REST API:
 - **Catalog Management** — Fetch and index specs, user stories, and docs from Confluence and Jira
 - **Test Generation** — AI-powered (Gemini) generation of API and UI test cases
 - **Coverage Tracking** — Link tests to requirements, fetch full Azure DevOps test steps, update coverage metrics in Confluence
-- **Bug Triage** — AI-powered Jira bug assessment with dry-run preview and one-click apply (transition, comment, priority, custom fields)
+- **Bug Triage** — AI-powered Jira bug assessment with dry-run preview and one-click apply (transition, priority, custom fields; optional comment)
 - **CSV Fixer** — Fix broken Azure DevOps Test Plan CSV files for import (browser-based, no ADO connection required)
 - **Scheduling & Webhooks** — Schedule recurring workflows or trigger them via GitHub/Jira/Confluence events
 - **Workflow Composition** — Chain multiple workflows into a single orchestrated execution
@@ -255,6 +255,11 @@ curl -X POST http://localhost:8000/api/workflows/triage-bugs/apply-issues \
   -H "Content-Type: application/json" \
   -d '{"run_id": "<run_id>", "issue_keys": null}'
 
+# Apply triage results and also add triage comments
+curl -X POST http://localhost:8000/api/workflows/triage-bugs/apply-issues \
+   -H "Content-Type: application/json" \
+   -d '{"run_id": "<run_id>", "issue_keys": null, "add_comment": true}'
+
 # Apply triage results to a single issue
 curl -X POST http://localhost:8000/api/workflows/triage-bugs/apply-issues \
   -H "Content-Type: application/json" \
@@ -292,7 +297,7 @@ The triage workflow fetches Jira bugs via JQL, locates the associated Confluence
 5. **Apply** — After reviewing the dry-run table, apply changes issue-by-issue using the per-row **Apply** button, or apply all real bugs at once with **Apply All**. Each apply call:
    - Transitions the issue to the configured target status.
    - Sets `priority`, `severity` (custom field), and `impact` (custom field).
-   - Adds a triage comment with the full Gemini reasoning.
+   - Optionally adds a triage comment with Gemini reasoning only when explicitly enabled.
 
 ### Parameters
 
@@ -301,6 +306,7 @@ The triage workflow fetches Jira bugs via JQL, locates the associated Confluence
 | JQL | Yes | Jira Query Language filter for bugs to triage |
 | Max Results | No | Cap on number of issues fetched (default: 50) |
 | Apply | No | `true` to apply changes immediately; `false` (default) for dry-run |
+| Add Comment | No | `true` to add Jira triage comments (default: `false`) |
 | Target Status | No | Jira status to transition issues to after triage (e.g. `In Progress`) |
 | Severity Field ID | No | Jira custom field ID for severity (e.g. `customfield_10200`) |
 | Impact Field ID | No | Jira custom field ID for impact (e.g. `customfield_10201`) |
