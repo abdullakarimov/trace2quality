@@ -302,16 +302,22 @@ async def _find_epic_tc_parent_id(confluence_client, us_code: str, log_fn=None) 
 
     # CQL title search — no type filter so both pages AND folders are matched.
     # Confluence Cloud folders have type="folder" and are excluded when type=page is used.
+    # Use contains (~) searches to avoid CQL issues with Cyrillic homoglyphs:
+    #   Е (U+0415) vs E,  Т (U+0422) vs T,  С (U+0421) vs C.
+    # Two OR branches cover Latin "TC" and Cyrillic "ТС".
     cql = (
         f'space="{confluence_client.space}" '
-        f'AND (title = "E-{epic_num} | TC" OR title ~ "E-{epic_num} | TC |")'
+        f'AND (title ~ "{epic_num} | TC" OR title ~ "{epic_num} | ТС")'
     )
-    pages = await confluence_client.search_pages(cql, limit=5)
+    pages = await confluence_client.search_pages(cql, limit=10)
     parent_id: Optional[str] = None
+    # Match "E-9 | TC" or "Е-9 | ТС" — any mix of Latin/Cyrillic E, T, C.
+    pattern = re.compile(
+        rf"^[EЕ]-{re.escape(epic_num)}\s*\|\s*[TТ][CС]\b", flags=re.IGNORECASE
+    )
     for page in pages:
         title = str(page.get("title") or "")
-        # Accept "E-9 | TC" or "E-9 | TC | …" (with any suffix)
-        if re.match(rf"^E-{re.escape(epic_num)}\s*\|\s*TC\b", title, flags=re.IGNORECASE):
+        if pattern.match(title):
             parent_id = str(page.get("id") or "") or None
             if log_fn:
                 log_fn("INFO", f"Found epic TC parent for E-{epic_num}: id={parent_id} title='{title}'")
