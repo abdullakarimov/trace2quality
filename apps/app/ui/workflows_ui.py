@@ -117,6 +117,30 @@ def _render_update_coverage_page(
             </table>
             <h4>Artifacts</h4>
             <ul id="artifactLinks"><li>Waiting for artifacts...</li></ul>
+            <div id="previewSection" style="display:none">
+                <h4 style="margin-top:16px">Dry-Run Preview — Generated TC Page Content</h4>
+                <p style="font-size:13px;color:#555;margin-bottom:8px">This is the HTML that would be written to each Confluence TC page. Review it below, then click <strong>Apply to Confluence</strong> to publish.</p>
+                <div id="previewItems"></div>
+                <div style="margin-top:16px">
+                    <form id="applyForm" method="post" action="/ui/workflows/update_coverage/run">
+                        <input type="hidden" name="mode" id="applyMode" />
+                        <input type="hidden" name="us_code" id="applyUsCode" />
+                        <input type="hidden" name="batch_delay_seconds" id="applyBatchDelay" />
+                        <input type="hidden" name="max_items" id="applyMaxItems" />
+                        <input type="hidden" name="apply" value="on" />
+                        <input type="hidden" name="force" value="on" />
+                        <input type="hidden" name="preview_run_id" id="applyPreviewRunId" />
+                        <input type="hidden" name="fail_fast" id="applyFailFast" />
+                        <input type="hidden" name="include_debug_artifacts" id="applyDebugArtifacts" />
+                        <input type="hidden" name="use_cached_azure_snapshot" id="applyCachedSnapshot" />
+                        <p style="font-size:12px;color:#666;margin-bottom:8px">Publishes the previewed content directly — no re-generation. Force-rewrite is always enabled.</p>
+                        <button type="submit" style="background:#1a7f3c;font-size:15px;padding:12px 28px"
+                            onclick="return confirm('This will write the previewed content to Confluence. Continue?')">
+                            ✅ Apply to Confluence
+                        </button>
+                    </form>
+                </div>
+            </div>
         </div>
         <script>
             const runId = "{run_id}";
@@ -257,6 +281,54 @@ def _render_update_coverage_page(
                                 }}
                             }}
                         }}
+
+                        // Dry-run preview: show generated HTML and "Apply" button once run is terminal.
+                        const isTerminal = ["succeeded", "failed", "canceled"].includes(run.status);
+                        if (run.dry_run && isTerminal) {{
+                            const previewArtifact = artifacts.find((a) => a.filename === "generated_pages_preview.json");
+                            if (previewArtifact) {{
+                                const previewResp = await fetch(previewArtifact.download_url);
+                                if (previewResp.ok) {{
+                                    const previews = await previewResp.json();
+                                    const previewSection = document.getElementById("previewSection");
+                                    const previewItems = document.getElementById("previewItems");
+                                    if (previews.length > 0 && previewItems.childElementCount === 0) {{
+                                        for (const item of previews) {{
+                                            const details = document.createElement("details");
+                                            details.style.cssText = "margin-bottom:10px;border:1px solid #ddd;border-radius:6px;overflow:hidden";
+                                            const summary = document.createElement("summary");
+                                            summary.style.cssText = "padding:10px 14px;cursor:pointer;font-weight:600;background:#f0f4ff;user-select:none";
+                                            summary.textContent = `${{item.us_code}} — ${{item.tc_title || "TC Page"}}`;
+                                            const inner = document.createElement("div");
+                                            inner.style.cssText = "padding:16px;background:#fff;border-top:1px solid #ddd;font-size:13px;overflow:auto;max-height:500px";
+                                            // Render Confluence storage HTML as a readable preview.
+                                            // Strip ac: macro tags for display; keep structural HTML.
+                                            const cleanHtml = (item.html || "")
+                                                .replace(/<ac:[^>]+>/g, "")
+                                                .replace(/<\/ac:[^>]+>/g, "")
+                                                .replace(/<ri:[^>]+\/>/g, "")
+                                                .replace(/<ri:[^>]+>/g, "")
+                                                .replace(/<\/ri:[^>]+>/g, "");
+                                            inner.innerHTML = cleanHtml;
+                                            details.appendChild(summary);
+                                            details.appendChild(inner);
+                                            previewItems.appendChild(details);
+                                        }}
+                                        // Populate apply form — use preview_run_id so workflow skips re-generation.
+                                        const params = run.parameters || {{}};
+                                        document.getElementById("applyMode").value = params.mode || "single";
+                                        document.getElementById("applyUsCode").value = params.us_code || "";
+                                        document.getElementById("applyBatchDelay").value = params.batch_delay_seconds ?? 3;
+                                        document.getElementById("applyMaxItems").value = params.max_items || "";
+                                        document.getElementById("applyPreviewRunId").value = runId;
+                                        document.getElementById("applyFailFast").value = params.fail_fast ? "on" : "";
+                                        document.getElementById("applyDebugArtifacts").value = params.include_debug_artifacts ? "on" : "";
+                                        document.getElementById("applyCachedSnapshot").value = params.use_cached_azure_snapshot ? "on" : "";
+                                        previewSection.style.display = "block";
+                                    }}
+                                }}
+                            }}
+                        }}
                     }}
                 }}
 
@@ -310,6 +382,8 @@ def _render_update_coverage_page(
             .counters {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0; }}
             pre {{ background: #f7f7f7; border-radius: 4px; padding: 10px; overflow: auto; max-height: 240px; }}
             .hidden {{ display: none; }}
+            details summary::-webkit-details-marker {{ color: #0066cc; }}
+            details[open] summary {{ background: #e6edff; }}
         </style>
     </head>
     <body>
@@ -1034,6 +1108,7 @@ async def run_update_coverage_submit(request: Request, db: Session = Depends(get
         "fail_fast": _bool_from_form(form.get("fail_fast")),
         "include_debug_artifacts": _bool_from_form(form.get("include_debug_artifacts")),
         "use_cached_azure_snapshot": _bool_from_form(form.get("use_cached_azure_snapshot")),
+        "preview_run_id": str(form.get("preview_run_id") or "").strip() or None,
     }
 
     try:

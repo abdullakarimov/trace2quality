@@ -289,28 +289,57 @@ class ConfluenceClient(IntegrationClient):
             return {"success": False, "error": str(e)}
 
     async def find_page_by_title(self, title: str) -> Optional[dict[str, Any]]:
-        """Find a page by exact title in the configured space."""
+        """Find a page by exact title in the configured space.
+
+        First tries an exact CQL match (``title="…"``); if that returns nothing
+        (can happen when the title contains CQL-special characters such as ``|``),
+        falls back to a ``title ~ "…"`` contains search and verifies the result
+        title matches exactly.
+        """
+        def _row_to_dict(found: dict) -> dict[str, Any]:
+            return {
+                "id": str(found.get("id")),
+                "title": found.get("title", ""),
+                "url": found.get("_links", {}).get("self", ""),
+            }
+
         try:
             async with httpx.AsyncClient() as client:
                 auth = (self.email, self.api_token)
-                cql = f'space="{self.space}" and title="{title.replace("\"", "\\\"")}"'
+
+                # Exact match first.
+                cql_exact = f'space="{self.space}" and title="{title.replace(chr(34), chr(92) + chr(34))}"'
                 response = await client.get(
                     f"{self.base_url}/rest/api/content/search",
                     auth=auth,
-                    params={"cql": cql, "limit": 1},
+                    params={"cql": cql_exact, "limit": 1},
                     timeout=30,
                 )
-                if response.status_code != 200:
-                    return None
-                results = response.json().get("results", [])
-                if not results:
-                    return None
-                found = results[0]
-                return {
-                    "id": str(found.get("id")),
-                    "title": found.get("title", ""),
-                    "url": found.get("_links", {}).get("self", ""),
-                }
+                if response.status_code == 200:
+                    results = response.json().get("results", [])
+                    if results:
+                        return _row_to_dict(results[0])
+
+                # Fallback: contains search, then verify exact title match.
+                # Use the US code prefix as the search term to avoid CQL issues with
+                # special characters like | that appear in the full title.
+                import re as _re
+                us_prefix_match = _re.match(r"(US-[\d.]+)", title)
+                search_term = us_prefix_match.group(1) if us_prefix_match else title[:30]
+                cql_contains = (
+                    f'space="{self.space}" and title ~ "{search_term}" and type=page'
+                )
+                response2 = await client.get(
+                    f"{self.base_url}/rest/api/content/search",
+                    auth=auth,
+                    params={"cql": cql_contains, "limit": 25},
+                    timeout=30,
+                )
+                if response2.status_code == 200:
+                    for candidate in response2.json().get("results", []):
+                        if candidate.get("title", "").strip() == title.strip():
+                            return _row_to_dict(candidate)
+                return None
         except Exception as e:
             logger.error(f"Error finding page by title {title}: {str(e)}")
             return None

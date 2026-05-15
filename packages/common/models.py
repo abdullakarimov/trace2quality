@@ -91,20 +91,21 @@ class UpdateCoverageRunRequest(BaseModel):
     fail_fast: bool = False
     include_debug_artifacts: bool = True
     use_cached_azure_snapshot: bool = False
+    preview_run_id: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_mode_us_code(self):
         """Validate mode/us_code constraints and max_items semantics."""
         us_pattern = r"^US-[0-9]+(\.[0-9]+)*$"
 
-        if self.mode == "single":
+        if self.mode == "single" and not self.preview_run_id:
             if not self.us_code:
                 raise ValueError("us_code is required when mode=single")
             if not re.match(us_pattern, self.us_code):
                 raise ValueError(
                     "us_code must match pattern ^US-[0-9]+(\\.[0-9]+)*$"
                 )
-        else:
+        elif self.mode != "single":
             if self.us_code:
                 raise ValueError("us_code is only allowed when mode=single")
 

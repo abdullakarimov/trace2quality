@@ -371,6 +371,7 @@ def run_workflow(run_id: str, workflow_key: str):
                     fail_fast=bool(params.get("fail_fast", False)),
                     include_debug_artifacts=bool(params.get("include_debug_artifacts", True)),
                     use_cached_azure_snapshot=bool(params.get("use_cached_azure_snapshot", False)),
+                    preview_run_id=params.get("preview_run_id") or None,
                     correlation_id=correlation_id,
                     log_fn=lambda level, message: log_step(level, message, correlation_id=correlation_id),
                 )

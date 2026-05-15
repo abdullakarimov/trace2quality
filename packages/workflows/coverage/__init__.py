@@ -67,8 +67,30 @@ def _extract_acceptance_criteria(storage_html: str) -> list[str]:
     soup = BeautifulSoup(storage_html or "", "html.parser")
     ac: list[str] = []
 
+    _AC_ID_RE = re.compile(r"^A[CС]-?\d+$", re.IGNORECASE)
+
     for table in soup.find_all("table"):
-        for row in table.find_all("tr"):
+        rows = table.find_all("tr")
+
+        # Strategy 1: table whose first-column cells are AC-XX IDs.
+        # Collect all data rows where the first cell matches the AC-ID pattern,
+        # then build "AC-XX: <description>" entries from the second cell.
+        ac_rows: list[str] = []
+        for row in rows:
+            cells = row.find_all(["th", "td"])
+            if len(cells) < 2:
+                continue
+            key = cells[0].get_text(" ", strip=True).strip()
+            if _AC_ID_RE.match(key):
+                description = cells[1].get_text(" ", strip=True)
+                if description:
+                    ac_rows.append(f"{key}: {description}")
+        if ac_rows:
+            ac.extend(ac_rows)
+            continue
+
+        # Strategy 2: English "acceptance criteria" two-column table (legacy format).
+        for row in rows:
             cells = row.find_all(["th", "td"])
             if len(cells) < 2:
                 continue
@@ -81,9 +103,10 @@ def _extract_acceptance_criteria(storage_html: str) -> list[str]:
     if ac:
         return ac
 
+    # Fallback: scan paragraphs/list-items that start with an AC identifier.
     for bullet in soup.find_all(["li", "p"]):
         text = bullet.get_text(" ", strip=True)
-        if text.lower().startswith("ac") or "acceptance criteria" in text.lower():
+        if re.match(r"A[CС]-?\d+", text, re.IGNORECASE) or "acceptance criteria" in text.lower():
             ac.append(text)
 
     return ac
@@ -813,6 +836,9 @@ async def _publish_with_fallback(
         existing = await confluence_client.find_page_by_title(tc_title)
         if existing and existing.get("id"):
             return await confluence_client.update_page_content(existing["id"], _with_links(generated_html))
+        # Page exists on Confluence but we still can't locate it — abort rather than
+        # spinning through HTML-sanitization retries that will all fail the same way.
+        return {"success": False, "error": f"Page with title already exists but could not be located for update: {tc_title!r}"}
 
     if "unsupported" in error.lower() or "extension" in error.lower():
         regenerated = await regenerate_once()
@@ -845,6 +871,7 @@ async def run_update_coverage_pages_workflow(
     include_debug_artifacts: bool,
     use_cached_azure_snapshot: bool,
     correlation_id: str,
+    preview_run_id: Optional[str] = None,
     log_fn: Optional[Callable[[str, str], None]] = None,
 ) -> dict[str, Any]:
     """Generate/update coverage pages with script-equivalent operational controls."""
@@ -859,6 +886,113 @@ async def run_update_coverage_pages_workflow(
         getattr(logger, level.lower(), logger.info)(stamped)
 
     root = _project_root()
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # FAST-PATH: publish from a previous dry-run's saved preview (skip ADO/LLM)
+    # ─────────────────────────────────────────────────────────────────────────────
+    if preview_run_id and apply:
+        preview_path = (
+            root / "data" / "artifacts" / "results" / preview_run_id / "generated_pages_preview.json"
+        )
+        try:
+            previews: list[dict[str, Any]] = json.loads(preview_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"Cannot load preview from run {preview_run_id!r}: {exc}") from exc
+
+        log("INFO", f"Preview-apply fast-path: publishing {len(previews)} pages from run {preview_run_id}")
+        per_item_results_fast: list[dict[str, Any]] = []
+        errors_fast: list[dict[str, Any]] = []
+
+        for item in previews:
+            item_us_code = item.get("us_code", "unknown")
+            tc_page_id = item.get("tc_page_id")
+            tc_title = item.get("tc_title", item_us_code)
+            html_snapshot = item.get("html", "")
+            try:
+                log("INFO", f"Publishing preview for {item_us_code} (tc_page_id={tc_page_id or 'new'})")
+                epic_parent_id: Optional[str] = None
+                if not tc_page_id:
+                    epic_parent_id = await _find_epic_tc_parent_id(
+                        confluence_client, item_us_code, log_fn=log
+                    )
+
+                async def _regen(h: str = html_snapshot) -> str:
+                    return h
+
+                publish_result = await _publish_with_fallback(
+                    confluence_client=confluence_client,
+                    tc_page_id=tc_page_id,
+                    tc_title=tc_title,
+                    us_page_id=None,
+                    generated_html=html_snapshot,
+                    regenerate_once=_regen,
+                    parent_id=epic_parent_id,
+                    related_links_html="",  # already embedded in stored html
+                )
+                if not publish_result.get("success"):
+                    raise RuntimeError(
+                        f"Confluence publish failed: {publish_result.get('error', 'unknown error')}"
+                    )
+                final_page_id = str(publish_result.get("page_id") or tc_page_id or "")
+                action = "updated" if tc_page_id else "created"
+                log("INFO", f"Published {item_us_code}: action={action} page_id={final_page_id}")
+                per_item_results_fast.append(
+                    {
+                        "us_code": item_us_code,
+                        "mode": "preview_apply",
+                        "action": action,
+                        "tc_page_id": final_page_id,
+                        "tc_title": tc_title,
+                        "api_doc_title": item.get("api_doc_title"),
+                        "api_tc_count": 0,
+                        "ui_tc_count": 0,
+                        "api_suite_ids": [],
+                        "ui_suite_ids": [],
+                        "message": "Coverage page published from preview",
+                    }
+                )
+            except Exception as exc:
+                category = _classify_error(exc)
+                error_message = str(exc)
+                errors_fast.append(
+                    {"us_code": item_us_code, "category": category, "message": error_message}
+                )
+                per_item_results_fast.append(
+                    {
+                        "us_code": item_us_code,
+                        "mode": "preview_apply",
+                        "action": "failed",
+                        "tc_page_id": None,
+                        "tc_title": tc_title,
+                        "api_doc_title": None,
+                        "api_tc_count": 0,
+                        "ui_tc_count": 0,
+                        "api_suite_ids": [],
+                        "ui_suite_ids": [],
+                        "message": f"{category}: {error_message}",
+                    }
+                )
+                log("ERROR", f"Failed publishing preview for {item_us_code}: {error_message}")
+                if fail_fast:
+                    break
+
+        total_f = len(per_item_results_fast)
+        succeeded_f = sum(1 for r in per_item_results_fast if r["action"] in {"updated", "created"})
+        failed_f = sum(1 for r in per_item_results_fast if r["action"] == "failed")
+        log("INFO", f"Preview-apply complete: total={total_f} succeeded={succeeded_f} failed={failed_f}")
+        return {
+            "status": "success" if failed_f == 0 else "partial_failure",
+            "mode": "preview_apply",
+            "summary": {
+                "total": total_f,
+                "succeeded": succeeded_f,
+                "failed": failed_f,
+                "skipped": 0,
+            },
+            "per_item_results": per_item_results_fast,
+            "generated_pages_preview": [],
+            "errors": errors_fast,
+        }
     data_dir = root / "data"
     catalog_dir = data_dir / "catalog"
     confluence_dir = data_dir / "confluence"
@@ -1090,23 +1224,26 @@ async def run_update_coverage_pages_workflow(
                 is_stub = len(existing_text.strip()) < STUB_CONTENT_THRESHOLD
                 rewrite_allowed = is_stub or force
                 if not rewrite_allowed:
-                    log("INFO", f"Skipping {item_us_code}: existing page has non-stub content and force=false")
-                    per_item_results.append(
-                        {
-                            "us_code": item_us_code,
-                            "mode": mode,
-                            "action": "skipped",
-                            "tc_page_id": tc_page_id,
-                            "tc_title": tc_title,
-                            "api_doc_title": None,
-                            "api_tc_count": 0,
-                            "ui_tc_count": 0,
-                            "api_suite_ids": [],
-                            "ui_suite_ids": [],
-                            "message": "Skipped: existing non-stub page and force=false",
-                        }
-                    )
-                    continue
+                    if apply:
+                        log("INFO", f"Skipping {item_us_code}: existing page has non-stub content and force=false")
+                        per_item_results.append(
+                            {
+                                "us_code": item_us_code,
+                                "mode": mode,
+                                "action": "skipped",
+                                "tc_page_id": tc_page_id,
+                                "tc_title": tc_title,
+                                "api_doc_title": None,
+                                "api_tc_count": 0,
+                                "ui_tc_count": 0,
+                                "api_suite_ids": [],
+                                "ui_suite_ids": [],
+                                "message": "Skipped: existing non-stub page and force=false",
+                            }
+                        )
+                        continue
+                    # Dry-run: still generate and preview; note that force=true would be required to apply
+                    log("INFO", f"Dry-run: {item_us_code} has non-stub content; generating preview (force=true required to apply)")
 
             api_doc_match = await _safe_match_api_doc(gemini_client, us_text, api_doc_pages)
             log("INFO", f"[STEP 3] API doc match (via Gemini) for {item_us_code}: {api_doc_match.get('api_doc_title') or 'none'}")
@@ -1231,18 +1368,17 @@ async def run_update_coverage_pages_workflow(
             # always re-appends the canonical links block (even on sanitized/minimal fallbacks).
             generated_html = _ensure_related_links_section(generated_html, "").strip()
 
-            if include_debug_artifacts:
-                generated_previews.append(
-                    {
-                        "us_code": item_us_code,
-                        "tc_title": tc_title,
-                        "tc_page_id": tc_page_id,
-                        "api_doc_title": api_doc_match.get("api_doc_title"),
-                        "api_doc_id": api_doc_match.get("api_doc_id"),
-                        "acceptance_criteria": ac_list,
-                        "html": generated_html + "\n" + related_links_html,
-                    }
-                )
+            generated_previews.append(
+                {
+                    "us_code": item_us_code,
+                    "tc_title": tc_title,
+                    "tc_page_id": tc_page_id,
+                    "api_doc_title": api_doc_match.get("api_doc_title"),
+                    "api_doc_id": api_doc_match.get("api_doc_id"),
+                    "acceptance_criteria": ac_list,
+                    "html": generated_html + "\n" + related_links_html,
+                }
+            )
 
             action = "preview"
             message = "Dry-run preview generated"
