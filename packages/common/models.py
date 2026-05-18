@@ -25,6 +25,7 @@ class WorkflowType(str, Enum):
     TRIAGE_BUGS = "triage_bugs"
     ASSOCIATE_AUTOMATION = "associate_automation"
     GENERATE_REPORT = "generate_report"
+    GENERATE_FROM_CONFLUENCE = "generate_from_confluence"
 
 
 class RunStatus(str, Enum):

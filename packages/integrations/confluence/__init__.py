@@ -344,5 +344,43 @@ class ConfluenceClient(IntegrationClient):
             logger.error(f"Error finding page by title {title}: {str(e)}")
             return None
 
+    async def get_child_pages(self, page_id: str) -> list[dict[str, Any]]:
+        """Return direct child pages of *page_id* as ``[{id, title}]`` dicts."""
+        try:
+            async with httpx.AsyncClient() as client:
+                auth = (self.email, self.api_token)
+                response = await client.get(
+                    f"{self.base_url}/rest/api/content/{page_id}/child/page",
+                    auth=auth,
+                    params={"limit": 250, "expand": ""},
+                    timeout=30,
+                )
+                if response.status_code == 200:
+                    return [
+                        {"id": str(r["id"]), "title": r.get("title", "")}
+                        for r in response.json().get("results", [])
+                    ]
+                logger.error(f"Failed to fetch child pages of {page_id}: {response.status_code}")
+                return []
+        except Exception as e:
+            logger.error(f"Error fetching child pages of {page_id}: {str(e)}")
+            return []
+
+    async def get_all_child_pages_recursive(self, root_page_id: str) -> list[dict[str, Any]]:
+        """Recursively collect all descendant pages under *root_page_id*."""
+        collected: list[dict[str, Any]] = []
+        queue = [root_page_id]
+        visited: set[str] = set()
+        while queue:
+            current_id = queue.pop(0)
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+            children = await self.get_child_pages(current_id)
+            for child in children:
+                collected.append(child)
+                queue.append(child["id"])
+        return collected
+
 
 __all__ = ["ConfluenceClient"]

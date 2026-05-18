@@ -421,6 +421,47 @@ def run_workflow(run_id: str, workflow_key: str):
                 correlation_id=correlation_id,
             )
 
+        elif workflow_key == "generate_from_confluence":
+            log_step("INFO", "Generating test cases from Confluence", correlation_id=correlation_id)
+
+            confluence_client = integration_registry.get_client(
+                IntegrationType.CONFLUENCE,
+                _resolve_integration_config(session, IntegrationType.CONFLUENCE),
+            )
+            azure_client = integration_registry.get_client(
+                IntegrationType.AZURE_DEVOPS,
+                _resolve_integration_config(session, IntegrationType.AZURE_DEVOPS),
+            )
+            gemini_client = integration_registry.get_client(
+                IntegrationType.GEMINI,
+                _resolve_integration_config(session, IntegrationType.GEMINI),
+            )
+
+            result = asyncio.run(
+                generation.run_generate_from_confluence_workflow(
+                    confluence_client=confluence_client,
+                    gemini_client=gemini_client,
+                    azure_client=azure_client,
+                    epic_page_id=str(params.get("epic_page_id", "")),
+                    test_plan_id=str(params.get("test_plan_id", "")),
+                    api_docs_folder_id=str(params.get("api_docs_folder_id", "")),
+                    api_keyword=str(params.get("api_keyword", "API")),
+                    single_us_id=params.get("single_us_id") or None,
+                    resume_from=params.get("resume_from") or None,
+                    force=bool(params.get("force", False)),
+                    dry_run=bool(params.get("dry_run", False)),
+                    gemini_delay_seconds=int(params.get("gemini_delay_seconds", 10)),
+                    log_fn=lambda level, message: log_step(level, message, correlation_id=correlation_id),
+                )
+            )
+            workflow_result = result
+            log_step(
+                "INFO",
+                f"generate_from_confluence complete: "
+                f"created={result.get('tests_created', 0)} across {result.get('us_processed', 0)} US(s)",
+                correlation_id=correlation_id,
+            )
+
         else:
             log_step("WARNING", f"Unknown workflow: {workflow_key}", correlation_id=correlation_id)
             run.status = "failed"
@@ -444,6 +485,8 @@ def run_workflow(run_id: str, workflow_key: str):
             elif workflow_key == "triage_bugs":
                 _persist_artifact(session, run_id, "triage_summary.json", workflow_result.get("summary", {}))
                 _persist_artifact(session, run_id, "per_issue_results.json", workflow_result.get("per_issue_results", []))
+            elif workflow_key == "generate_from_confluence":
+                _persist_artifact(session, run_id, "per_us_results.json", workflow_result.get("per_us_results", []))
 
         run.status = "succeeded"
         run.completed_at = _utc_now()

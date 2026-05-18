@@ -537,4 +537,119 @@ class AzureDevOpsClient(IntegrationClient):
         return results
 
 
+    async def get_root_suite_id(self, test_plan_id: str) -> str:
+        """Return the ID of the root suite for a test plan."""
+        async with httpx.AsyncClient() as client:
+            auth = ("", self.pat)
+            response = await client.get(
+                f"{self.project_base_url}/testplan/Plans/{test_plan_id}?api-version=7.1",
+                auth=auth,
+                timeout=30,
+            )
+            response.raise_for_status()
+            data = response.json()
+            root_suite = data.get("rootSuite") or data.get("rootSuiteId")
+            if isinstance(root_suite, dict):
+                return str(root_suite["id"])
+            return str(root_suite)
+
+    async def get_or_create_suite(
+        self, test_plan_id: str, suite_name: str, parent_suite_id: Optional[str]
+    ) -> str:
+        """Find an existing static suite by name under *parent_suite_id*, or create it."""
+        async with httpx.AsyncClient() as client:
+            auth = ("", self.pat)
+            # List suites and find by name
+            resp = await client.get(
+                f"{self.project_base_url}/testplan/Plans/{test_plan_id}/Suites?api-version=7.1",
+                auth=auth,
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                for suite in resp.json().get("value", []):
+                    if (
+                        suite.get("name") == suite_name
+                        and str(suite.get("parentSuite", {}).get("id", "")) == str(parent_suite_id)
+                    ):
+                        return str(suite["id"])
+            # Create suite
+            body = {
+                "suiteType": "staticTestSuite",
+                "name": suite_name,
+                "parentSuite": {"id": int(parent_suite_id)} if parent_suite_id else None,
+            }
+            create_resp = await client.post(
+                f"{self.project_base_url}/testplan/Plans/{test_plan_id}/Suites?api-version=7.1",
+                auth=auth,
+                json=body,
+                timeout=30,
+            )
+            create_resp.raise_for_status()
+            return str(create_resp.json()["id"])
+
+    async def create_test_case_in_suite(
+        self,
+        test_plan_id: str,
+        suite_id: str,
+        title: str,
+        priority: str = "Medium",
+        steps: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Create a Test Case work item and link it to a suite."""
+        priority_map = {"High": 1, "Medium": 2, "Low": 3}
+        priority_int = priority_map.get(priority, 2)
+
+        # Build steps XML
+        steps_xml = ""
+        if steps:
+            step_items = []
+            for i, step in enumerate(steps, 1):
+                action = str(step.get("action", "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                expected = str(step.get("expected", "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                step_items.append(
+                    f'<step id="{i}" type="ValidateStep">'
+                    f"<parameterizedString isformatted=\"true\">{action}</parameterizedString>"
+                    f"<parameterizedString isformatted=\"true\">{expected}</parameterizedString>"
+                    f"<description/></step>"
+                )
+            steps_xml = f'<steps id="0" last="{len(steps)}">' + "".join(step_items) + "</steps>"
+
+        patch_body = [
+            {"op": "add", "path": "/fields/System.Title", "value": title},
+            {"op": "add", "path": "/fields/Microsoft.VSTS.Common.Priority", "value": priority_int},
+        ]
+        if steps_xml:
+            patch_body.append({"op": "add", "path": "/fields/Microsoft.VSTS.TCM.Steps", "value": steps_xml})
+
+        try:
+            async with httpx.AsyncClient() as client:
+                auth = ("", self.pat)
+                # Create the work item
+                response = await client.post(
+                    f"{self.project_base_url}/wit/workitems/$Test%20Case?api-version=7.1",
+                    auth=auth,
+                    headers={"Content-Type": "application/json-patch+json"},
+                    json=patch_body,
+                    timeout=30,
+                )
+                if response.status_code not in (200, 201):
+                    return {"success": False, "error": response.text}
+                wi_id = response.json()["id"]
+
+                # Link to suite
+                link_response = await client.post(
+                    f"{self.project_base_url}/testplan/Plans/{test_plan_id}/Suites/{suite_id}/TestCase?api-version=7.1",
+                    auth=auth,
+                    json=[{"workItem": {"id": wi_id}}],
+                    timeout=30,
+                )
+                if link_response.status_code not in (200, 201):
+                    logger.warning(f"TC {wi_id} created but not linked to suite {suite_id}: {link_response.text}")
+
+                return {"success": True, "case_id": str(wi_id)}
+        except Exception as exc:
+            logger.error(f"Error in create_test_case_in_suite: {exc}")
+            return {"success": False, "error": str(exc)}
+
+
 __all__ = ["AzureDevOpsClient"]
